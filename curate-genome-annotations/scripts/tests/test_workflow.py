@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 import tempfile
@@ -15,20 +16,51 @@ import run_annotation_workflow as workflow  # noqa: E402
 
 class FakeClient:
     def call_tool(self, name: str, arguments: dict):
-        if name == "list_annotations":
-            chromosome = arguments["chromosome"]
-            if chromosome == "chrB":
-                return {
-                    "annotations": [
-                        {"id": "f3", "type": "CDS", "start": 5, "locus_tag": "b3"},
-                        {"id": "skip", "type": "CDS", "start": 1, "locus_tag": None},
-                    ]
-                }
+        if name == "list_annotation_quality_candidates":
             return {
-                "annotations": [
-                    {"id": "f2", "type": "CDS", "start": 20, "locus_tag": "a2"},
-                    {"id": "f1", "type": "CDS", "start": 10, "locus_tag": "a1"},
-                ]
+                "policyVersion": "codexomics.annotation-quality-policy.v1",
+                "candidates": [
+                    {
+                        "chromosome": "chrA",
+                        "qualityScore": 10,
+                        "qualityBand": "critical",
+                        "feature": {
+                            "id": "f1",
+                            "featureType": "CDS",
+                            "start": 10,
+                            "locusTag": "a1",
+                        },
+                        "reasons": [{"code": "generic_product"}],
+                        "recommendedResearchFocus": ["molecular function"],
+                    },
+                    {
+                        "chromosome": "chrB",
+                        "qualityScore": 20,
+                        "qualityBand": "low",
+                        "feature": {
+                            "id": "f3",
+                            "featureType": "tRNA",
+                            "start": 5,
+                            "locusTag": "b3",
+                        },
+                        "reasons": [{"code": "missing_functional_note"}],
+                        "recommendedResearchFocus": ["RNA function"],
+                    },
+                    {
+                        "chromosome": "chrA",
+                        "qualityScore": 30,
+                        "qualityBand": "low",
+                        "feature": {
+                            "id": "f2",
+                            "featureType": "gene",
+                            "start": 20,
+                            "gene": "a2",
+                        },
+                        "reasons": [],
+                        "recommendedResearchFocus": [],
+                    },
+                    {"chromosome": "chrA", "qualityScore": 5, "feature": {"id": "skip"}},
+                ],
             }
         if name == "list_annotation_changesets":
             return {
@@ -53,17 +85,27 @@ class WorkflowHelpersTests(unittest.TestCase):
             path.write_text("lysC # primary\nthrB,talB\n", encoding="utf-8")
             self.assertEqual(workflow.read_gene_file(path), ["lysC", "thrB", "talB"])
 
-    def test_daily_cds_selection_is_deterministic_and_requires_locus(self) -> None:
-        result = workflow.enumerate_cds(
+    def test_daily_quality_selection_supports_multiple_gene_feature_types(self) -> None:
+        result = workflow.enumerate_annotation_candidates(
             FakeClient(),
             {"windowId": "w", "expected_genome": "g"},
             {"chromosomes": ["chrB", "chrA"]},
             None,
+            "low-quality",
+            70,
+            None,
         )
         self.assertEqual(
-            [(item.chromosome, item.identifier) for item in result],
-            [("chrA", "a1"), ("chrA", "a2"), ("chrB", "b3")],
+            [(item.chromosome, item.identifier, item.feature_type) for item in result],
+            [("chrA", "a1", "CDS"), ("chrB", "b3", "tRNA"), ("chrA", "a2", "gene")],
         )
+        self.assertEqual(result[0].quality_reasons, ("generic_product",))
+        self.assertEqual(result[1].recommended_research_focus, ("RNA function",))
+
+    def test_quality_score_argument_is_bounded(self) -> None:
+        self.assertEqual(workflow.quality_score("70"), 70)
+        with self.assertRaises(argparse.ArgumentTypeError):
+            workflow.quality_score("101")
 
     def test_existing_changesets_exclude_active_but_not_rejected(self) -> None:
         identities = workflow.changeset_identities(FakeClient(), {"windowId": "w"})

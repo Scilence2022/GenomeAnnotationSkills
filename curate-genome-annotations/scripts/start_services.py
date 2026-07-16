@@ -22,6 +22,7 @@ CODEXOMICS_TOOLS = {
     "list_genome_windows",
     "load_genome_file",
     "list_annotations",
+    "list_annotation_quality_candidates",
     "list_annotation_changesets",
     "resolve_annotation_target",
     "start_annotation_research",

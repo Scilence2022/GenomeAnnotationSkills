@@ -7,14 +7,14 @@ Use CodeXomics MCP tools mode as the only client-facing orchestration endpoint. 
 1. Call `tools/list` and require:
    - `list_genome_windows`
    - `load_genome_file`
-   - `list_annotations`
+   - `list_annotation_quality_candidates`
    - `list_annotation_changesets`
    - `resolve_annotation_target`
    - `start_annotation_research`
    - `get_annotation_research_workflow`
 2. Call `load_genome_file` with an absolute path unless the intended file is already loaded.
 3. Call `list_genome_windows`, identify the correct window, and attach its `windowId` and `expected_genome` to subsequent calls.
-4. Call `resolve_annotation_target`. Require `target.featureType == CDS` and a stable locus or protein identifier.
+4. Call `resolve_annotation_target`. Require a supported gene-associated feature and a stable locus tag, protein identifier, or gene symbol. Co-located records resolve to CDS first, then a specific RNA/transcript feature, then generic gene.
 5. Call `start_annotation_research`. The loaded genome supplies organism metadata when available; supply `organism` only as a fallback.
 6. Save the returned `workflow.taskId` immediately.
 7. Poll `get_annotation_research_workflow` with bounded backoff. Terminal states are `completed`, `failed`, and `cancelled`. A completed DGR task may still produce no ChangeSet if evidence or target binding is insufficient.
@@ -26,7 +26,7 @@ Do not call DGR directly unless CodeXomics orchestration is unavailable and the 
 
 Use a precise prompt such as:
 
-> For the loaded genome, refine only the CDS resolved as `lysC`. Use Deep Gene Research for a thorough evidence search, exclude unrelated lysozyme-C results, create an evidence-backed annotation ChangeSet with a concise citation-rich Note, archive the full report, and stop before approval or application.
+> For the loaded genome, refine only the feature resolved as `lysC`. Prefer CDS if the locus also has a generic gene record. Use Deep Gene Research for a thorough evidence search, exclude unrelated lysozyme-C results, create an evidence-backed annotation ChangeSet with a concise citation-rich Note, archive the full report, and stop before approval or application.
 
 For a list, include exact identifiers and require an independent target-resolution check for each. Ask the ChatBox to summarize task ID, report attachment, and ChangeSet ID per target.
 
@@ -38,14 +38,14 @@ Preserve user order, trim whitespace, and remove exact duplicate identifiers cas
 
 ### Daily count
 
-1. Enumerate `CDS` features with `list_annotations`.
-2. Sort deterministically by chromosome, start coordinate, locus tag, then feature ID.
-3. Prefer `locus_tag`, then gene name, then stable feature ID.
+1. Call `list_annotation_quality_candidates` for supported gene-associated features.
+2. Collapse records at the same chromosome, coordinates, strand, and stable identity. Prefer `CDS`, then specific RNA/transcript types, then generic `gene`.
+3. By default retain scores at or below `--maximum-quality-score` and sort lowest quality first. Use chromosome, coordinate, and identifier as deterministic tie-breakers.
 4. Exclude targets already recorded as successfully submitted in the per-genome state file.
 5. Exclude targets with an existing active, approved, or committed ChangeSet unless `--include-existing-changesets` was explicitly selected.
-6. Select the first requested number and submit sequentially.
+6. Select the first requested number, add each candidate's recommended research focus to its DGR request, and submit sequentially.
 
-This is a reproducible coverage policy, not a claim that coordinate order equals biological priority. If the user specifies a priority strategy—hypothetical proteins, low-confidence annotations, pathway membership, or a curated list—honor it and record the policy.
+The default `low-quality` policy prioritizes missing or generic products, missing functional Notes and cross-references, identity gaps, and CDS translation defects. Quality scoring is triage rather than a biological truth claim. Use `--selection-policy coordinate` for reproducible coverage independent of quality.
 
 ## Proposal quality
 
