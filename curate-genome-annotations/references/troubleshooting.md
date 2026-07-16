@@ -44,6 +44,10 @@ Check:
 
 Do not manufacture a minimal ChangeSet to hide missing evidence.
 
+If `workflow.status` is `completed` while `changeSetStatus` is `validation_failed`, DGR and report archival succeeded but CodeXomics rejected proposal materialization. Inspect `proposalMaterializationError` or `proposalReason`. Keep the task and attachment; after correcting the validator or configuration, rerun the same explicit target so CodeXomics retries the stored proposal.
+
+The runner persists a started task failure with `status: failed`, `retryable`, `failureCount`, and the original task ID. Daily selection treats that failed record as handled to prevent an unattended loop. Retry it explicitly with `--gene`, `--genes`, or `--gene-file`; the stable idempotency key resumes the existing task instead of starting unrelated research.
+
 ## ChangeSet is stale
 
 The target feature or annotation revision changed after proposal creation. Start a new research workflow against the live annotation. Do not apply the stale proposal or edit its stored hashes.

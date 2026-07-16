@@ -82,6 +82,51 @@ class WorkflowHelpersTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "different genome"):
                 workflow.load_state(path, genome, "different")
 
+    def test_failed_workflow_is_persisted_as_retryable_when_a_task_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            genome = Path(directory) / "genome.gbk"
+            genome.write_text("LOCUS test\n", encoding="utf-8")
+            path = Path(directory) / "state.json"
+            state = workflow.load_state(path, genome, "abc")
+
+            workflow.persist_failed_workflow(
+                path,
+                state,
+                "gas:v1:test",
+                task_id="task-28751",
+                selection_mode="daily-count",
+                requested_identifier="b0002",
+                resolved_identity="b0002",
+                error=RuntimeError("Evidence record contains an invalid PMID identifier"),
+            )
+
+            record = workflow.load_state(path, genome, "abc")["workflows"]["gas:v1:test"]
+            self.assertEqual(record["status"], "failed")
+            self.assertEqual(record["taskId"], "task-28751")
+            self.assertTrue(record["retryable"])
+            self.assertEqual(record["failureCount"], 1)
+            self.assertEqual(record["errorType"], "RuntimeError")
+
+    def test_failed_workflow_without_a_started_task_is_not_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            genome = Path(directory) / "genome.gbk"
+            genome.write_text("LOCUS test\n", encoding="utf-8")
+            path = Path(directory) / "state.json"
+            state = workflow.load_state(path, genome, "abc")
+
+            workflow.persist_failed_workflow(
+                path,
+                state,
+                "gas:v1:not-started",
+                task_id=None,
+                selection_mode="explicit",
+                requested_identifier="ambiguous",
+                resolved_identity=None,
+                error=RuntimeError("Target is ambiguous"),
+            )
+
+            self.assertFalse(path.exists())
+
     def test_compact_workflow_drops_large_result(self) -> None:
         large = {"workflow": "not used", "fullReport": "x" * 10000}
         compact = workflow.compact_workflow(
