@@ -66,6 +66,7 @@ Keep scheduling separate from curation logic: the scheduler invokes `run_annotat
 - Read [references/configuration.md](references/configuration.md) when setting credentials, provider models, SearXNG, task storage, or scoped permissions.
 - Read [references/troubleshooting.md](references/troubleshooting.md) when an endpoint is unavailable, DGR finishes implausibly fast, a task stalls, a target is ambiguous, or a ChangeSet is not created.
 - Preserve DGR's task ledger and the CodeXomics sidecar. Do not delete either to “unstick” a run.
+- Treat `completed` research with `changeSetStatus: validation_failed` as a recoverable proposal-processing failure. Preserve the task ID and rerun the same explicit target after correcting the validator or configuration.
 
 ## Completion contract
 

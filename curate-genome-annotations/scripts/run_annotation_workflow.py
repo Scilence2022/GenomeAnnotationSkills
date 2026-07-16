@@ -398,6 +398,42 @@ def save_state(path: Path, state: dict[str, Any]) -> None:
     atomic_json_write(path, state)
 
 
+def persist_failed_workflow(
+    path: Path,
+    state: dict[str, Any],
+    key: str | None,
+    *,
+    task_id: str | None,
+    selection_mode: str,
+    requested_identifier: str,
+    resolved_identity: str | None,
+    error: Exception,
+) -> None:
+    if not key:
+        return
+    existing = state["workflows"].get(key)
+    effective_task_id = task_id or (existing.get("taskId") if isinstance(existing, dict) else None)
+    if not effective_task_id:
+        return
+    record = state["workflows"].setdefault(key, {})
+    finished_at = utc_now()
+    record.update(
+        {
+            "taskId": effective_task_id,
+            "selectionMode": selection_mode,
+            "requestedIdentifier": requested_identifier,
+            "resolvedIdentity": resolved_identity or record.get("resolvedIdentity"),
+            "status": "failed",
+            "error": str(error),
+            "errorType": type(error).__name__,
+            "retryable": task_id is not None,
+            "failureCount": int(record.get("failureCount") or 0) + 1,
+            "finishedAt": finished_at,
+        }
+    )
+    save_state(path, state)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Create evidence-backed, human-reviewable CodeXomics annotation ChangeSets"
@@ -579,6 +615,9 @@ def main() -> int:
                         "requestedChromosome": candidate.chromosome,
                         "startedAt": utc_now(),
                     }
+                    key: str | None = None
+                    task_id: str | None = None
+                    resolved_identity: str | None = None
                     try:
                         resolved = client.call_tool(
                             "resolve_annotation_target",
@@ -673,9 +712,21 @@ def main() -> int:
                                 "finishedAt": utc_now(),
                             }
                         )
+                        for stale_field in ("error", "errorType", "retryable", "failureCount"):
+                            record.pop(stale_field, None)
                         save_state(state_path, state)
                     except (McpError, RuntimeError, TimeoutError, ValueError) as exc:
                         result.update({"status": "failed", "error": str(exc), "finishedAt": utc_now()})
+                        persist_failed_workflow(
+                            state_path,
+                            state,
+                            key,
+                            task_id=task_id,
+                            selection_mode=summary["selector"],
+                            requested_identifier=candidate.identifier,
+                            resolved_identity=resolved_identity,
+                            error=exc,
+                        )
                     summary["results"].append(result)
 
             summary["stateFile"] = str(state_path)

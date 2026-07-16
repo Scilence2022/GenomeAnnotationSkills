@@ -69,6 +69,8 @@ CodeXomics derives a semantic idempotency key when none is supplied. The runner 
 
 Persist task IDs before polling. On interruption, rerun with the same state directory and inputs. Never discard the DGR ledger or CodeXomics sidecar to force a retry. Use `--force-refresh` only when intentionally bypassing DGR's semantic result cache; it does not remove identity checks.
 
+When polling or proposal materialization fails after a task has started, retain the task ID and record the failure as retryable. Unattended daily selection skips that failed target to avoid repeatedly consuming the batch; retry the exact target explicitly after correcting the underlying service, validation, or evidence problem.
+
 ## Human review
 
 Research completion is not annotation application. The reviewer opens CodeXomics Annotation Review Center, filters the queue, examines current versus proposed qualifiers and citations, selects eligible ChangeSets, and uses batch approval/application only under the configured governance policy. The creator must not self-approve.
