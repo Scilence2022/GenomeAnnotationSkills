@@ -1,0 +1,4 @@
+interface:
+  display_name: "Genome Annotation Curator"
+  short_description: "Run safe CodeXomics and DGR annotation workflows"
+  default_prompt: "Use $curate-genome-annotations to load a genome and create evidence-backed annotation ChangeSets for selected CDS genes."
