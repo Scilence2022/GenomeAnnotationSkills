@@ -2,11 +2,11 @@
 
 Production-oriented agent skills and automation tools for evidence-backed genome annotation refinement with [CodeXomics](https://github.com/Scilence2022/CodeXomics) and [Deep Gene Research](https://github.com/Scilence2022/DeepGeneResearch).
 
-The repository currently provides `curate-genome-annotations`, a skill that can load a genome, research exact CDS features, and create human-reviewable annotation ChangeSets for:
+The repository currently provides `curate-genome-annotations`, a skill that can load a genome, prioritize exact coding and non-coding gene annotation features, and create human-reviewable annotation ChangeSets for:
 
 - one specified gene;
 - an explicit gene list or gene file;
-- a deterministic daily batch, such as 10 CDS features per day.
+- a deterministic daily batch, such as the 10 lowest-quality eligible features per day.
 
 It supports external MCP agents—including Codex, Claude, and OpenClaw-style clients—as well as the internal CodeXomics ChatBox with DGR connected through MCP.
 
@@ -16,7 +16,7 @@ It supports external MCP agents—including Codex, Claude, and OpenClaw-style cl
 flowchart LR
     U["User or scheduled task"] --> A["Agent using this skill"]
     A --> C["CodeXomics MCP tools mode"]
-    C --> G["Loaded genome and exact CDS target"]
+    C --> G["Loaded genome and exact gene annotation target"]
     C --> D["Deep Gene Research MCP"]
     D --> E["Evidence, citations, and annotation proposal"]
     E --> C
@@ -31,7 +31,7 @@ CodeXomics remains the authority for genome identity, organism metadata, feature
 
 The included workflow enforces the following boundaries:
 
-- only features resolved by CodeXomics as `CDS` are processed;
+- supported coding, non-coding RNA, transcript, gene, and pseudogene features are processed; co-located records prefer CDS;
 - every target requires a stable `locus_tag` or `protein_id`;
 - ambiguous targets are rejected instead of guessed;
 - full DGR reports are archived as genome-scoped attachments;
@@ -50,7 +50,7 @@ curate-genome-annotations/
 ├── scripts/
 │   ├── bootstrap_repositories.py    # Clone and install CodeXomics and DGR
 │   ├── start_services.py            # Reuse, check, or start both MCP services
-│   ├── run_annotation_workflow.py   # Single, list, and daily CDS workflows
+│   ├── run_annotation_workflow.py   # Single, list, and quality-ranked daily workflows
 │   └── mcp_http.py                  # Dependency-free MCP HTTP client
 └── references/
     ├── setup.md
@@ -136,7 +136,7 @@ python3 curate-genome-annotations/scripts/run_annotation_workflow.py \
   --dry-run
 ```
 
-The dry-run loads or reuses the specified genome, binds the correct CodeXomics window, and verifies that the target resolves to an eligible CDS. It does not start DGR or create a ChangeSet.
+The dry-run loads or reuses the specified genome, binds the correct CodeXomics window, and verifies that the target resolves to an eligible gene-associated feature. It does not start DGR or create a ChangeSet.
 
 ## Annotation examples
 
@@ -173,11 +173,13 @@ The gene file accepts newline-, comma-, or tab-separated identifiers. Lines may 
 python3 curate-genome-annotations/scripts/run_annotation_workflow.py \
   --genome /absolute/path/genome.gbk \
   --daily-count 10 \
+  --selection-policy low-quality \
+  --maximum-quality-score 70 \
   --state-dir "$HOME/.local/state/genome-annotation-skills" \
   --output /absolute/path/latest-annotation-run.json
 ```
 
-Daily selection is deterministic and resumable. By default it excludes CDS features already covered by successful daily state and targets with an active, approved, or committed ChangeSet.
+Daily selection is deterministic and resumable. By default it ranks the lowest-quality supported gene annotation features first, excludes targets already covered by terminal daily state, and excludes targets with an active, approved, or committed ChangeSet. Use `--selection-policy coordinate` for the earlier coordinate-order policy.
 
 Scheduling should be handled by the agent platform's recurring automation system or a supervised scheduler. Read [`references/automation.md`](curate-genome-annotations/references/automation.md) before creating a schedule.
 
@@ -185,7 +187,7 @@ Scheduling should be handled by the agent platform's recurring automation system
 
 A successful research run reports, per gene:
 
-- the resolved CDS target;
+- the resolved feature type and exact target;
 - DGR task status and task ID;
 - archived report attachment metadata;
 - annotation proposal status;

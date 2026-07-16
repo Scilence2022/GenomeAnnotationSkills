@@ -30,7 +30,7 @@ Treat a completed task with insufficient evidence as a failed curation outcome e
 
 ## Target is missing or ambiguous
 
-Use locus tag or protein ID plus chromosome. Do not use coordinates copied from a different genome build. CodeXomics intentionally rejects multiple CDS matches and non-CDS features.
+Use locus tag, protein ID, or an unambiguous gene symbol plus chromosome. Do not use coordinates copied from a different genome build. CodeXomics accepts supported coding and non-coding gene features, prefers CDS at co-located duplicate records, and still rejects multiple distinct matches.
 
 ## DGR completed but no ChangeSet exists
 

@@ -24,8 +24,8 @@ from mcp_http import McpError, McpHttpClient, require_tools
 REQUIRED_TOOLS = {
     "get_genome_info",
     "get_annotation_research_workflow",
+    "list_annotation_quality_candidates",
     "list_annotation_changesets",
-    "list_annotations",
     "list_genome_windows",
     "load_genome_file",
     "resolve_annotation_target",
@@ -34,8 +34,8 @@ REQUIRED_TOOLS = {
 TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 EXISTING_CHANGESET_TERMINAL_REUSABLE = {"rejected", "stale", "rolled_back", "cancelled"}
 DEFAULT_PROMPT = (
-    "Refine this CDS annotation using organism-specific evidence. Exclude lexical gene-name collisions and unrelated "
-    "organisms, label homolog-only evidence, synthesize a concise citation-rich Note, and preserve uncertainty."
+    "Refine this gene annotation feature using organism-specific evidence. Exclude lexical gene-name collisions and "
+    "unrelated organisms, label homolog-only evidence, synthesize a concise citation-rich Note, and preserve uncertainty."
 )
 
 
@@ -59,6 +59,13 @@ def positive_integer(value: str) -> int:
     parsed = int(value)
     if parsed < 1:
         raise argparse.ArgumentTypeError("value must be at least 1")
+    return parsed
+
+
+def quality_score(value: str) -> float:
+    parsed = float(value)
+    if parsed < 0 or parsed > 100:
+        raise argparse.ArgumentTypeError("value must be from 0 to 100")
     return parsed
 
 
@@ -151,6 +158,12 @@ class Candidate:
     chromosome: str | None = None
     start: int | None = None
     feature_id: str | None = None
+    feature_type: str | None = None
+    quality_score: float | None = None
+    quality_band: str | None = None
+    quality_reasons: tuple[str, ...] = ()
+    recommended_research_focus: tuple[str, ...] = ()
+    quality_policy_version: str | None = None
 
 
 def routing(window_id: str, expected_genome: str) -> dict[str, str]:
@@ -249,7 +262,7 @@ def prepare_genome(
 
 def feature_identity(target: dict[str, Any]) -> str:
     return normalized(
-        target.get("locusTag") or target.get("proteinId") or target.get("featureId") or target.get("geneSymbol")
+        target.get("locusTag") or target.get("proteinId") or target.get("geneSymbol") or target.get("featureId")
     )
 
 
@@ -276,45 +289,62 @@ def changeset_identities(client: McpHttpClient, route: dict[str, str]) -> set[st
             return identities
 
 
-def enumerate_cds(
+def enumerate_annotation_candidates(
     client: McpHttpClient,
     route: dict[str, str],
     genome_info: dict[str, Any],
     chromosome_filter: str | None,
+    selection_policy: str,
+    maximum_quality_score: float,
+    feature_types: list[str] | None,
 ) -> list[Candidate]:
-    chromosomes = [chromosome_filter] if chromosome_filter else genome_info.get("chromosomes") or []
-    if not chromosomes:
-        raise RuntimeError("CodeXomics did not report chromosomes for daily CDS selection")
+    chromosomes = genome_info.get("chromosomes") or []
+    if chromosome_filter and chromosome_filter not in chromosomes:
+        raise RuntimeError(f"CodeXomics did not report chromosome {chromosome_filter!r}")
     candidates: list[Candidate] = []
-    for chromosome in chromosomes:
-        payload = client.call_tool(
-            "list_annotations",
-            {**route, "chromosome": chromosome, "type": "CDS", "limit": 0, "offset": 0},
+    arguments: dict[str, Any] = {
+        **route,
+        "sortBy": "quality" if selection_policy == "low-quality" else "coordinate",
+        "maximumQualityScore": maximum_quality_score if selection_policy == "low-quality" else 100,
+        "limit": 0,
+        "offset": 0,
+    }
+    if chromosome_filter:
+        arguments["chromosome"] = chromosome_filter
+    if feature_types:
+        arguments["featureTypes"] = feature_types
+    payload = client.call_tool("list_annotation_quality_candidates", arguments)
+    if not isinstance(payload, dict) or not isinstance(payload.get("candidates"), list):
+        raise RuntimeError("CodeXomics returned an invalid annotation quality candidate list")
+    for item in payload["candidates"]:
+        if not isinstance(item, dict) or not isinstance(item.get("feature"), dict):
+            continue
+        feature = item["feature"]
+        identifier = str(
+            feature.get("locusTag") or feature.get("proteinId") or feature.get("gene") or ""
+        ).strip()
+        if not identifier:
+            continue
+        reasons = tuple(
+            str(reason.get("code"))
+            for reason in item.get("reasons", [])
+            if isinstance(reason, dict) and reason.get("code")
         )
-        if not isinstance(payload, dict) or not isinstance(payload.get("annotations"), list):
-            raise RuntimeError(f"CodeXomics returned an invalid CDS list for {chromosome}")
-        for annotation in payload["annotations"]:
-            if not isinstance(annotation, dict):
-                continue
-            locus = str(annotation.get("locus_tag") or "").strip()
-            if not locus:
-                continue
-            candidates.append(
-                Candidate(
-                    identifier=locus,
-                    chromosome=str(chromosome),
-                    start=int(annotation.get("start") or 0),
-                    feature_id=str(annotation.get("id") or "") or None,
-                )
+        focus = tuple(str(value) for value in item.get("recommendedResearchFocus", []) if str(value).strip())
+        candidates.append(
+            Candidate(
+                identifier=identifier,
+                chromosome=str(item.get("chromosome") or chromosome_filter or "") or None,
+                start=int(feature.get("start") or 0),
+                feature_id=str(feature.get("id") or "") or None,
+                feature_type=str(feature.get("featureType") or "") or None,
+                quality_score=float(item.get("qualityScore")) if item.get("qualityScore") is not None else None,
+                quality_band=str(item.get("qualityBand") or "") or None,
+                quality_reasons=reasons,
+                recommended_research_focus=focus,
+                quality_policy_version=str(item.get("policyVersion") or payload.get("policyVersion") or "") or None,
             )
-    candidates.sort(
-        key=lambda item: (
-            normalized(item.chromosome),
-            item.start or 0,
-            normalized(item.identifier),
-            normalized(item.feature_id),
         )
-    )
     return candidates
 
 
@@ -444,6 +474,22 @@ def parse_args() -> argparse.Namespace:
     selector.add_argument("--genes")
     selector.add_argument("--gene-file", type=Path)
     selector.add_argument("--daily-count", type=positive_integer)
+    parser.add_argument(
+        "--selection-policy",
+        choices=("low-quality", "coordinate"),
+        default="low-quality",
+        help="Daily candidate ranking policy (default: low-quality)",
+    )
+    parser.add_argument(
+        "--maximum-quality-score",
+        type=quality_score,
+        default=70,
+        help="Maximum CodeXomics quality score selected by low-quality policy (default: 70)",
+    )
+    parser.add_argument(
+        "--feature-types",
+        help="Optional comma-separated gene annotation feature types (for example CDS,tRNA,rRNA,ncRNA,gene)",
+    )
     parser.add_argument("--chromosome")
     parser.add_argument("--window-id")
     parser.add_argument("--expected-genome")
@@ -533,7 +579,16 @@ def main() -> int:
             state = load_state(state_path, genome_path, genome_key)
 
             if args.daily_count:
-                all_candidates = enumerate_cds(client, route, genome_info, args.chromosome)
+                requested_feature_types = parse_list(args.feature_types)
+                all_candidates = enumerate_annotation_candidates(
+                    client,
+                    route,
+                    genome_info,
+                    args.chromosome,
+                    args.selection_policy,
+                    args.maximum_quality_score,
+                    requested_feature_types or None,
+                )
                 excluded_changesets = (
                     set() if args.include_existing_changesets else changeset_identities(client, route)
                 )
@@ -552,9 +607,12 @@ def main() -> int:
                 ][: args.daily_count]
                 summary["selection"] = {
                     "requested": args.daily_count,
-                    "availableCds": len(all_candidates),
+                    "availableFeatures": len(all_candidates),
                     "selected": len(candidates),
                     "excludedByExistingChangeSet": len(excluded_changesets),
+                    "policy": args.selection_policy,
+                    "maximumQualityScore": args.maximum_quality_score,
+                    "featureTypes": requested_feature_types or "CodeXomics defaults",
                 }
             else:
                 identifiers = (
@@ -590,10 +648,10 @@ def main() -> int:
                         target = resolved.get("target") if isinstance(resolved, dict) else None
                         if not isinstance(target, dict):
                             raise RuntimeError("CodeXomics returned an invalid resolved target")
-                        if str(target.get("featureType", "")).upper() != "CDS":
-                            raise RuntimeError(f"Resolved feature is {target.get('featureType') or 'unknown'}, not CDS")
-                        if not (target.get("locusTag") or target.get("proteinId")):
-                            raise RuntimeError("Resolved CDS lacks a stable locus tag or protein identifier")
+                        if not (target.get("locusTag") or target.get("proteinId") or target.get("geneSymbol")):
+                            raise RuntimeError(
+                                "Resolved annotation target lacks a locus tag, protein identifier, or gene symbol"
+                            )
                         candidate_summary["eligible"] = True
                         candidate_summary["resolvedTarget"] = compact_workflow({"target": target})["target"]
                     except (McpError, RuntimeError, ValueError) as exc:
@@ -614,6 +672,10 @@ def main() -> int:
                         "requestedIdentifier": candidate.identifier,
                         "requestedChromosome": candidate.chromosome,
                         "startedAt": utc_now(),
+                        "candidateFeatureType": candidate.feature_type,
+                        "candidateQualityScore": candidate.quality_score,
+                        "candidateQualityBand": candidate.quality_band,
+                        "candidateQualityReasons": list(candidate.quality_reasons),
                     }
                     key: str | None = None
                     task_id: str | None = None
@@ -630,25 +692,36 @@ def main() -> int:
                         if not isinstance(resolved, dict) or not isinstance(resolved.get("target"), dict):
                             raise RuntimeError("CodeXomics returned an invalid resolved target")
                         target = resolved["target"]
-                        if str(target.get("featureType", "")).upper() != "CDS":
-                            raise RuntimeError(
-                                f"Resolved target is {target.get('featureType') or 'unknown'}, not CDS"
-                            )
-                        stable_identifier = target.get("locusTag") or target.get("proteinId")
+                        stable_identifier = (
+                            target.get("locusTag")
+                            or target.get("proteinId")
+                            or target.get("geneSymbol")
+                        )
                         if not stable_identifier:
-                            raise RuntimeError("Resolved CDS lacks a stable locus tag or protein identifier")
+                            raise RuntimeError(
+                                "Resolved annotation target lacks a locus tag, protein identifier, or gene symbol"
+                            )
                         resolved_identity = feature_identity(target)
-                        key = f"gas:v1:{digest({'genome': genome_key, 'target': target, 'intent': intent}, 40)}"
+                        candidate_intent = {
+                            **intent,
+                            "selectionPolicy": args.selection_policy if args.daily_count else "explicit",
+                            "qualityPolicyVersion": candidate.quality_policy_version,
+                            "recommendedResearchFocus": list(candidate.recommended_research_focus),
+                        }
+                        key = f"gas:v1:{digest({'genome': genome_key, 'target': target, 'intent': candidate_intent}, 40)}"
                         result["resolvedTarget"] = compact_workflow({"target": target})["target"]
                         result["idempotencyKey"] = key
                         existing = state["workflows"].get(key, {})
                         task_id = existing.get("taskId") if isinstance(existing, dict) else None
                         if not task_id:
+                            candidate_research_focus = unique_identifiers(
+                                [*args.research_focus, *candidate.recommended_research_focus]
+                            )[:20]
                             start_arguments: dict[str, Any] = {
                                 **route,
                                 "identifier": str(stable_identifier),
                                 "geneSymbol": target.get("geneSymbol") or None,
-                                "researchFocus": args.research_focus,
+                                "researchFocus": candidate_research_focus,
                                 "specificAspects": args.specific_aspect,
                                 "userPrompt": args.user_prompt,
                                 "language": args.language,

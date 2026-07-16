@@ -5,7 +5,7 @@
 Before creating a recurring job, obtain:
 
 - absolute genome file path;
-- number of CDS features per run;
+- number of gene annotation features per run;
 - daily time and IANA timezone;
 - selection policy and any exclusions;
 - research focus, prompt, language, and maximum results;
@@ -25,7 +25,9 @@ The scheduled command should be equivalent to:
 python3 /absolute/path/curate-genome-annotations/scripts/run_annotation_workflow.py \
   --genome /absolute/path/genome.gbk \
   --daily-count 10 \
-  --user-prompt "Refine CDS annotations using organism-specific evidence and precise citations" \
+  --selection-policy low-quality \
+  --maximum-quality-score 70 \
+  --user-prompt "Refine gene annotations using organism-specific evidence and precise citations" \
   --state-dir /durable/private/path/genome-annotation-state \
   --output /durable/private/path/latest-run.json
 ```
@@ -51,7 +53,7 @@ Capture the runner's JSON output and report:
 - endpoint or provider failures;
 - confirmation that no automatic approval/application occurred.
 
-Alert when the service is unavailable, a run produces no ChangeSet for multiple consecutive targets, DGR tasks complete implausibly without evidence, the task ledger is locked/corrupt, or the same CDS remains selected repeatedly.
+Alert when the service is unavailable, a run produces no ChangeSet for multiple consecutive targets, DGR tasks complete implausibly without evidence, the task ledger is locked/corrupt, or the same feature remains selected repeatedly.
 
 ## Changing policy
 

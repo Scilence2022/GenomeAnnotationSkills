@@ -1,6 +1,6 @@
 ---
 name: curate-genome-annotations
-description: Load a GenBank, EMBL, or FASTA genome into CodeXomics and use Deep Gene Research (DGR) to produce evidence-backed, human-reviewable annotation ChangeSets for exact CDS features. Use when asked to install, configure, start, or connect CodeXomics and DGR; refine one named gene; process a gene list; select a fixed number of CDS genes; resume a previous run; or prepare a recurring daily annotation job. Supports external MCP agents and the internal CodeXomics ChatBox. Never use it to silently approve or apply annotation changes.
+description: Load a GenBank, EMBL, or FASTA genome into CodeXomics and use Deep Gene Research (DGR) to produce evidence-backed, human-reviewable annotation ChangeSets for exact coding and non-coding gene annotation features. Use when asked to install, configure, start, or connect CodeXomics and DGR; refine one named gene; process a gene list; prioritize low-quality annotations; select a fixed daily batch; resume a previous run; or prepare a recurring annotation job. Supports external MCP agents and the internal CodeXomics ChatBox. Never use it to silently approve or apply annotation changes.
 ---
 
 # Curate Genome Annotations
@@ -9,10 +9,10 @@ Use CodeXomics as the genome authority and ChangeSet boundary. Use DGR as the ev
 
 ## Non-negotiable safety rules
 
-1. Work only on features resolved by CodeXomics as `CDS`.
-2. Require a stable `locus_tag` or `protein_id`; never guess across ambiguous matches.
+1. Work only on supported gene-associated features resolved by CodeXomics, including `CDS`, `gene`, transcripts, coding/non-coding RNA features, and pseudogenes. When co-located records represent one locus, prefer `CDS`, then the specific RNA/transcript feature, then generic `gene`.
+2. Require a stable `locus_tag`, `protein_id`, or gene symbol; never guess across ambiguous matches.
 3. Treat the genome loaded in CodeXomics as authoritative for organism, coordinates, current qualifiers, and revision.
-4. Prefer `start_annotation_research` followed by `get_annotation_research_workflow`. This path binds DGR to the live CDS, archives the full report, validates citations, and creates a ChangeSet when the caller has `annotation:propose`.
+4. Prefer `start_annotation_research` followed by `get_annotation_research_workflow`. This path binds DGR to the live feature, archives the full report, validates citations, and creates a ChangeSet when the caller has `annotation:propose`.
 5. Never call `request_annotation_approval`, `apply_annotation_changeset`, raw annotation-editing tools, or rollback tools from an unattended research workflow.
 6. Never give an unattended worker a curator credential. Use a research key limited to `annotation:read`, `annotation:research`, and `annotation:propose`.
 7. Report partial failures per gene. Do not claim an annotation was updated when only a proposal was created.
@@ -20,7 +20,7 @@ Use CodeXomics as the genome authority and ChangeSet boundary. Use DGR as the ev
 ## Choose the execution path
 
 - For an external agent such as Codex, Claude, or OpenClaw, use the scripts in `scripts/` or equivalent MCP calls against CodeXomics tools mode.
-- For CodeXomics ChatBox, load the genome in the app, confirm DGR connectivity, and give the ChatBox an exact CDS target or gene list. Instruct it to stop after creating ChangeSets.
+- For CodeXomics ChatBox, load the genome in the app, confirm DGR connectivity, and give the ChatBox an exact gene-associated target or gene list. Instruct it to stop after creating ChangeSets.
 - If repositories or services are missing, read [references/setup.md](references/setup.md), then run `scripts/bootstrap_repositories.py` and `scripts/start_services.py`.
 - If repositories and endpoints already exist, skip installation and startup. Validate endpoints with `scripts/start_services.py --check-only`.
 
@@ -31,7 +31,7 @@ Read [references/workflows.md](references/workflows.md) before the first run in 
 1. Confirm the CodeXomics MCP endpoint is in **tools mode** and exposes the required annotation research tools.
 2. Load the user's absolute genome path. If it is already loaded in the intended window, reuse that window.
 3. Pin every call with `windowId` and `expected_genome` when multiple windows exist.
-4. Resolve every requested identifier and reject non-CDS or ambiguous targets.
+4. Resolve every requested identifier and reject unsupported, identity-unsafe, or ambiguous targets.
 5. Start DGR through CodeXomics with the user's research prompt, aspects, language, and result limit.
 6. Poll the durable workflow until it reaches a terminal state. Do not infer completion from elapsed time.
 7. Record the archived report attachment, proposal status, ChangeSet ID, and failure reason for each gene.
@@ -48,10 +48,11 @@ python3 scripts/run_annotation_workflow.py \
 
 The runner supports exactly one selector per invocation:
 
-- `--gene lysC` for one CDS.
+- `--gene lysC` for one exact gene annotation feature.
 - `--genes lysC,thrB,talB` for an explicit list.
 - `--gene-file /absolute/path/genes.txt` for newline, comma, or tab-separated identifiers.
-- `--daily-count 10` for a deterministic batch of unresolved CDS features.
+- `--daily-count 10` for a deterministic batch ranked by lowest annotation quality first.
+- Add `--maximum-quality-score 70` to set the low-quality threshold, `--feature-types CDS,tRNA,rRNA,ncRNA,gene` to restrict types, or `--selection-policy coordinate` to retain coordinate-order coverage.
 
 Run with `--dry-run` before a new batch policy. The runner never approves or applies ChangeSets.
 
@@ -73,7 +74,7 @@ Keep scheduling separate from curation logic: the scheduler invokes `run_annotat
 Return a concise run summary containing:
 
 - genome path and CodeXomics window;
-- each exact CDS identifier and resolved locus;
+- each exact feature identifier, type, resolved locus, and pre-research quality score when available;
 - DGR task status and task ID;
 - archived full-report attachment ID/file name when present;
 - annotation proposal status;
