@@ -41,9 +41,10 @@ Preserve user order, trim whitespace, and remove exact duplicate identifiers cas
 1. Call `list_annotation_quality_candidates` for supported gene-associated features.
 2. Collapse records at the same chromosome, coordinates, strand, and stable identity. Prefer `CDS`, then specific RNA/transcript types, then generic `gene`.
 3. By default retain scores at or below `--maximum-quality-score` and sort lowest quality first. Use chromosome, coordinate, and identifier as deterministic tie-breakers.
-4. Exclude targets already recorded as successfully submitted in the per-genome state file.
-5. Exclude targets with an existing active, approved, or committed ChangeSet unless `--include-existing-changesets` was explicitly selected.
-6. Select the first requested number, add each candidate's recommended research focus to its DGR request, and submit sequentially.
+4. Ask CodeXomics to exclude targets with active research or a durably archived completed DGR report. This genome-sidecar ledger is authoritative across agents, machines sharing the sidecar, and runner state directories.
+5. Use the local state only as a resumable execution checkpoint. Treat completed and coverage-skipped records as covered; failed or cancelled records remain retryable.
+6. Exclude targets with an existing active, approved, or committed ChangeSet unless `--include-existing-changesets` was explicitly selected.
+7. Select the first requested number, add each candidate's recommended research focus to its DGR request, and submit sequentially with `repeatPolicy=skip-covered` as a race-condition guard.
 
 The default `low-quality` policy prioritizes missing or generic products, missing functional Notes and cross-references, identity gaps, and CDS translation defects. Quality scoring is triage rather than a biological truth claim. Use `--selection-policy coordinate` for reproducible coverage independent of quality.
 
@@ -65,11 +66,13 @@ Exclude lexical overmatches such as `lysC` interpreted as “lysozyme C”. Orga
 
 ## Idempotency and resumption
 
-CodeXomics derives a semantic idempotency key when none is supplied. The runner supplies a stable key derived from genome path, exact target, and research intent. Repeating the same request resumes or returns the same workflow; changing the research prompt creates a distinct intent.
+CodeXomics derives a semantic idempotency key when none is supplied. The runner supplies a stable key derived from genome path, exact target, and research intent. Idempotency handles identical requests; the separate research-coverage ledger prevents a changed prompt or a different agent from unintentionally repeating a completed target.
 
 Persist task IDs before polling. On interruption, rerun with the same state directory and inputs. Never discard the DGR ledger or CodeXomics sidecar to force a retry. Use `--force-refresh` only when intentionally bypassing DGR's semantic result cache; it does not remove identity checks.
 
-When polling or proposal materialization fails after a task has started, retain the task ID and record the failure as retryable. Unattended daily selection skips that failed target to avoid repeatedly consuming the batch; retry the exact target explicitly after correcting the underlying service, validation, or evidence problem.
+When polling or proposal materialization fails after a task has started, retain the task ID and record the failure as retryable. Failed, cancelled, and completed-but-unarchived runs do not count as durable coverage. Correct the underlying service, validation, or evidence problem and rerun; CodeXomics resumes exact active work and skips only safely covered targets.
+
+Use `--research-refresh-days N` when the curation policy requires periodic re-research. Use `--include-researched` only when the operator explicitly intends to bypass coverage for a new campaign. `--force-refresh` bypasses the DGR cache but does not by itself authorize repeated target selection.
 
 ## Human review
 

@@ -179,7 +179,7 @@ python3 curate-genome-annotations/scripts/run_annotation_workflow.py \
   --output /absolute/path/latest-annotation-run.json
 ```
 
-Daily selection is deterministic and resumable. By default it ranks the lowest-quality supported gene annotation features first, excludes targets already covered by terminal daily state, and excludes targets with an active, approved, or committed ChangeSet. Use `--selection-policy coordinate` for the earlier coordinate-order policy.
+Daily selection is deterministic and resumable. By default it ranks the lowest-quality supported features first and asks CodeXomics to exclude targets with active or durably archived completed DGR research, independent of the agent's local state directory. It also excludes targets with an active, approved, or committed ChangeSet. Use `--research-refresh-days N` for periodic refresh, `--include-researched` for an intentional repeat campaign, or `--selection-policy coordinate` for coordinate-order coverage.
 
 Scheduling should be handled by the agent platform's recurring automation system or a supervised scheduler. Read [`references/automation.md`](curate-genome-annotations/references/automation.md) before creating a schedule.
 
