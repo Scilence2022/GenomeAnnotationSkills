@@ -53,6 +53,7 @@ The runner supports exactly one selector per invocation:
 - `--gene-file /absolute/path/genes.txt` for newline, comma, or tab-separated identifiers.
 - `--daily-count 10` for a deterministic batch ranked by lowest annotation quality first.
 - Add `--maximum-quality-score 70` to set the low-quality threshold, `--feature-types CDS,tRNA,rRNA,ncRNA,gene` to restrict types, or `--selection-policy coordinate` to retain coordinate-order coverage.
+- Daily mode uses the CodeXomics per-genome research ledger to exclude active and durably completed DGR targets across agents and state directories. Use `--research-refresh-days N` for scheduled refresh or `--include-researched` only for an intentional repeat campaign.
 
 Run with `--dry-run` before a new batch policy. The runner never approves or applies ChangeSets.
 
@@ -60,7 +61,7 @@ Run with `--dry-run` before a new batch policy. The runner never approves or app
 
 Read [references/automation.md](references/automation.md) before creating a schedule. Ask for the daily time, timezone, genome path, count, selection policy, and research prompt if the user has not supplied them. Do not install or modify a schedule without explicit authorization.
 
-Keep scheduling separate from curation logic: the scheduler invokes `run_annotation_workflow.py --daily-count N`; the runner uses a per-genome lock and resumable state. Prefer one active run per genome and sequential DGR submissions unless capacity was explicitly validated.
+Keep scheduling separate from curation logic: the scheduler invokes `run_annotation_workflow.py --daily-count N`; CodeXomics owns research coverage in its genome sidecar, while the runner state remains a local execution checkpoint. The runner also uses a per-genome lock and a start-time repeat guard. Prefer sequential DGR submissions unless capacity was explicitly validated.
 
 ## Configuration and recovery
 

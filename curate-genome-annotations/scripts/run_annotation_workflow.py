@@ -26,12 +26,15 @@ REQUIRED_TOOLS = {
     "get_annotation_research_workflow",
     "list_annotation_quality_candidates",
     "list_annotation_changesets",
+    "list_annotation_research_history",
     "list_genome_windows",
     "load_genome_file",
     "resolve_annotation_target",
     "start_annotation_research",
 }
-TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
+TERMINAL_STATUSES = {"completed", "failed", "cancelled", "canceled"}
+DAILY_COVERED_STATUSES = {"completed", "skipped"}
+RETRYABLE_WORKFLOW_STATUSES = {"failed", "cancelled", "canceled"}
 EXISTING_CHANGESET_TERMINAL_REUSABLE = {"rejected", "stale", "rolled_back", "cancelled"}
 DEFAULT_PROMPT = (
     "Refine this gene annotation feature using organism-specific evidence. Exclude lexical gene-name collisions and "
@@ -66,6 +69,13 @@ def quality_score(value: str) -> float:
     parsed = float(value)
     if parsed < 0 or parsed > 100:
         raise argparse.ArgumentTypeError("value must be from 0 to 100")
+    return parsed
+
+
+def research_refresh_days(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1 or parsed > 3650:
+        raise argparse.ArgumentTypeError("value must be from 1 to 3650")
     return parsed
 
 
@@ -164,6 +174,14 @@ class Candidate:
     quality_reasons: tuple[str, ...] = ()
     recommended_research_focus: tuple[str, ...] = ()
     quality_policy_version: str | None = None
+
+
+@dataclass(frozen=True)
+class CandidateSelection:
+    candidates: tuple[Candidate, ...]
+    quality_matching_features: int
+    excluded_by_research_history: int
+    research_history_policy: str
 
 
 def routing(window_id: str, expected_genome: str) -> dict[str, str]:
@@ -266,6 +284,27 @@ def feature_identity(target: dict[str, Any]) -> str:
     )
 
 
+def select_workflow_attempt(workflows: dict[str, Any], base_key: str) -> tuple[str, dict[str, Any]]:
+    attempts: list[tuple[int, str, dict[str, Any]]] = []
+    for key, value in workflows.items():
+        if not isinstance(value, dict):
+            continue
+        if key == base_key:
+            attempts.append((0, key, value))
+            continue
+        prefix = f"{base_key}:retry:"
+        if not key.startswith(prefix):
+            continue
+        with contextlib.suppress(ValueError):
+            attempts.append((int(key[len(prefix) :]), key, value))
+    if not attempts:
+        return base_key, {}
+    attempt, key, record = max(attempts, key=lambda item: item[0])
+    if normalized(record.get("status")) in RETRYABLE_WORKFLOW_STATUSES:
+        return f"{base_key}:retry:{attempt + 1}", {}
+    return key, record
+
+
 def changeset_identities(client: McpHttpClient, route: dict[str, str]) -> set[str]:
     offset = 0
     identities: set[str] = set()
@@ -297,7 +336,9 @@ def enumerate_annotation_candidates(
     selection_policy: str,
     maximum_quality_score: float,
     feature_types: list[str] | None,
-) -> list[Candidate]:
+    research_history_policy: str = "include",
+    research_refresh_days_value: int | None = None,
+) -> CandidateSelection:
     chromosomes = genome_info.get("chromosomes") or []
     if chromosome_filter and chromosome_filter not in chromosomes:
         raise RuntimeError(f"CodeXomics did not report chromosome {chromosome_filter!r}")
@@ -308,7 +349,10 @@ def enumerate_annotation_candidates(
         "maximumQualityScore": maximum_quality_score if selection_policy == "low-quality" else 100,
         "limit": 0,
         "offset": 0,
+        "researchHistoryPolicy": research_history_policy,
     }
+    if research_refresh_days_value is not None:
+        arguments["researchRefreshDays"] = research_refresh_days_value
     if chromosome_filter:
         arguments["chromosome"] = chromosome_filter
     if feature_types:
@@ -345,7 +389,13 @@ def enumerate_annotation_candidates(
                 quality_policy_version=str(item.get("policyVersion") or payload.get("policyVersion") or "") or None,
             )
         )
-    return candidates
+    excluded_by_history = int(payload.get("excludedByResearchHistory") or 0)
+    return CandidateSelection(
+        candidates=tuple(candidates),
+        quality_matching_features=len(candidates) + excluded_by_history,
+        excluded_by_research_history=excluded_by_history,
+        research_history_policy=str(payload.get("researchHistoryPolicy") or research_history_policy),
+    )
 
 
 def compact_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
@@ -505,6 +555,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--language", default="English")
     parser.add_argument("--max-result", type=int, choices=range(1, 21), default=10, metavar="1..20")
     parser.add_argument("--force-refresh", action="store_true")
+    parser.add_argument(
+        "--include-researched",
+        action="store_true",
+        help="Allow daily selection to repeat targets with active or durably completed CodeXomics research",
+    )
+    parser.add_argument(
+        "--research-refresh-days",
+        type=research_refresh_days,
+        help="Allow archived completed research older than this many days to become eligible again",
+    )
     parser.add_argument("--include-existing-changesets", action="store_true")
     parser.add_argument("--poll-interval", type=float, default=5.0)
     parser.add_argument("--max-poll-interval", type=float, default=30.0)
@@ -580,7 +640,7 @@ def main() -> int:
 
             if args.daily_count:
                 requested_feature_types = parse_list(args.feature_types)
-                all_candidates = enumerate_annotation_candidates(
+                selection = enumerate_annotation_candidates(
                     client,
                     route,
                     genome_info,
@@ -588,7 +648,10 @@ def main() -> int:
                     args.selection_policy,
                     args.maximum_quality_score,
                     requested_feature_types or None,
+                    "include" if args.include_researched else "exclude-covered",
+                    args.research_refresh_days,
                 )
+                all_candidates = list(selection.candidates)
                 excluded_changesets = (
                     set() if args.include_existing_changesets else changeset_identities(client, route)
                 )
@@ -597,7 +660,7 @@ def main() -> int:
                     for record in state["workflows"].values()
                     if isinstance(record, dict)
                     and record.get("selectionMode") == "daily-count"
-                    and normalized(record.get("status")) in TERMINAL_STATUSES
+                    and normalized(record.get("status")) in DAILY_COVERED_STATUSES
                 }
                 candidates = [
                     candidate
@@ -607,10 +670,14 @@ def main() -> int:
                 ][: args.daily_count]
                 summary["selection"] = {
                     "requested": args.daily_count,
+                    "qualityMatchingFeatures": selection.quality_matching_features,
                     "availableFeatures": len(all_candidates),
                     "selected": len(candidates),
                     "excludedByExistingChangeSet": len(excluded_changesets),
+                    "excludedByResearchHistory": selection.excluded_by_research_history,
                     "policy": args.selection_policy,
+                    "researchHistoryPolicy": selection.research_history_policy,
+                    "researchRefreshDays": args.research_refresh_days,
                     "maximumQualityScore": args.maximum_quality_score,
                     "featureTypes": requested_feature_types or "CodeXomics defaults",
                 }
@@ -708,11 +775,14 @@ def main() -> int:
                             "qualityPolicyVersion": candidate.quality_policy_version,
                             "recommendedResearchFocus": list(candidate.recommended_research_focus),
                         }
-                        key = f"gas:v1:{digest({'genome': genome_key, 'target': target, 'intent': candidate_intent}, 40)}"
+                        base_key = (
+                            f"gas:v1:{digest({'genome': genome_key, 'target': target, 'intent': candidate_intent}, 40)}"
+                        )
+                        key, existing = select_workflow_attempt(state["workflows"], base_key)
                         result["resolvedTarget"] = compact_workflow({"target": target})["target"]
                         result["idempotencyKey"] = key
-                        existing = state["workflows"].get(key, {})
                         task_id = existing.get("taskId") if isinstance(existing, dict) else None
+                        start_payload: dict[str, Any] | None = None
                         if not task_id:
                             candidate_research_focus = unique_identifiers(
                                 [*args.research_focus, *candidate.recommended_research_focus]
@@ -727,6 +797,10 @@ def main() -> int:
                                 "language": args.language,
                                 "maxResult": args.max_result,
                                 "forceRefresh": args.force_refresh,
+                                "repeatPolicy":
+                                    "skip-covered"
+                                    if args.daily_count and not args.include_researched
+                                    else "allow",
                                 "idempotencyKey": key,
                                 "correlationId": f"gas:{digest({'key': key}, 32)}",
                             }
@@ -734,6 +808,8 @@ def main() -> int:
                                 start_arguments["chromosome"] = candidate.chromosome or target.get("chromosome")
                             if args.organism:
                                 start_arguments["organism"] = args.organism
+                            if args.research_refresh_days is not None:
+                                start_arguments["researchRefreshDays"] = args.research_refresh_days
                             start_payload = client.call_tool("start_annotation_research", start_arguments)
                             workflow = (
                                 start_payload.get("workflow") if isinstance(start_payload, dict) else None
@@ -751,25 +827,33 @@ def main() -> int:
                             }
                             save_state(state_path, state)
                         result["taskId"] = task_id
-                        workflow = poll_workflow(
-                            client,
-                            str(task_id),
-                            route,
-                            args.workflow_timeout,
-                            args.poll_interval,
-                            args.max_poll_interval,
-                        )
-                        compact = compact_workflow(workflow)
-                        result.update(compact)
-                        if normalized(compact.get("status")) == "completed":
-                            if compact.get("changeSetId"):
-                                result["curationOutcome"] = "changeset_created"
-                            else:
-                                result["curationOutcome"] = "no_changeset"
-                                result["curationIssue"] = (
-                                    compact.get("proposalReason")
-                                    or "Research completed without a reviewable annotation ChangeSet"
-                                )
+                        if isinstance(start_payload, dict) and start_payload.get("skipped") is True:
+                            compact = compact_workflow(workflow)
+                            compact["status"] = "skipped"
+                            result.update(compact)
+                            result["researchDisposition"] = start_payload.get("researchDisposition")
+                            result["researchCoverage"] = start_payload.get("coverage")
+                            result["curationOutcome"] = "research_already_covered"
+                        else:
+                            workflow = poll_workflow(
+                                client,
+                                str(task_id),
+                                route,
+                                args.workflow_timeout,
+                                args.poll_interval,
+                                args.max_poll_interval,
+                            )
+                            compact = compact_workflow(workflow)
+                            result.update(compact)
+                            if normalized(compact.get("status")) == "completed":
+                                if compact.get("changeSetId"):
+                                    result["curationOutcome"] = "changeset_created"
+                                else:
+                                    result["curationOutcome"] = "no_changeset"
+                                    result["curationIssue"] = (
+                                        compact.get("proposalReason")
+                                        or "Research completed without a reviewable annotation ChangeSet"
+                                    )
                         result["finishedAt"] = utc_now()
                         record = state["workflows"].setdefault(key, {})
                         record.update(
@@ -810,6 +894,9 @@ def main() -> int:
                 1 for item in summary["results"] if normalized(item.get("status")) == "completed"
             ),
             "failed": sum(1 for item in summary["results"] if normalized(item.get("status")) == "failed"),
+            "skippedPreviouslyResearched": sum(
+                1 for item in summary["results"] if item.get("curationOutcome") == "research_already_covered"
+            ),
             "changeSetsCreated": sum(1 for item in summary["results"] if item.get("changeSetId")),
             "completedWithoutChangeSet": sum(
                 1 for item in summary["results"] if item.get("curationOutcome") == "no_changeset"

@@ -27,6 +27,7 @@ python3 /absolute/path/curate-genome-annotations/scripts/run_annotation_workflow
   --daily-count 10 \
   --selection-policy low-quality \
   --maximum-quality-score 70 \
+  --research-refresh-days 365 \
   --user-prompt "Refine gene annotations using organism-specific evidence and precise citations" \
   --state-dir /durable/private/path/genome-annotation-state \
   --output /durable/private/path/latest-run.json
@@ -37,10 +38,12 @@ Run `start_services.py --check-only` first in a wrapper or service health check.
 ## Overlap and retries
 
 - The runner acquires a non-blocking, per-genome lock. A second overlapping job exits without submitting duplicate research.
+- CodeXomics keeps the authoritative research coverage in the genome sidecar. Candidate filtering excludes active and durably completed targets even when another agent or state directory performed the work.
+- `start_annotation_research` applies a second `skip-covered` guard so concurrent candidate lists cannot create duplicate work.
 - State is written atomically after every target transition.
 - Keep a stable state directory across runs.
 - Retry transient endpoint failures with scheduler-level backoff.
-- Do not automatically retry scientific validation failures indefinitely; surface them for human inspection.
+- Failed and completed-but-unarchived workflows remain retryable, but do not retry scientific validation failures indefinitely; surface repeated failures for human inspection.
 - Do not raise concurrency until DGR task storage, provider quotas, and CodeXomics window routing have been load-tested.
 
 ## Daily reporting

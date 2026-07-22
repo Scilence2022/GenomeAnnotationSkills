@@ -15,7 +15,11 @@ import run_annotation_workflow as workflow  # noqa: E402
 
 
 class FakeClient:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+
     def call_tool(self, name: str, arguments: dict):
+        self.calls.append((name, arguments))
         if name == "list_annotation_quality_candidates":
             return {
                 "policyVersion": "codexomics.annotation-quality-policy.v1",
@@ -86,8 +90,9 @@ class WorkflowHelpersTests(unittest.TestCase):
             self.assertEqual(workflow.read_gene_file(path), ["lysC", "thrB", "talB"])
 
     def test_daily_quality_selection_supports_multiple_gene_feature_types(self) -> None:
+        client = FakeClient()
         result = workflow.enumerate_annotation_candidates(
-            FakeClient(),
+            client,
             {"windowId": "w", "expected_genome": "g"},
             {"chromosomes": ["chrB", "chrA"]},
             None,
@@ -96,16 +101,64 @@ class WorkflowHelpersTests(unittest.TestCase):
             None,
         )
         self.assertEqual(
-            [(item.chromosome, item.identifier, item.feature_type) for item in result],
+            [(item.chromosome, item.identifier, item.feature_type) for item in result.candidates],
             [("chrA", "a1", "CDS"), ("chrB", "b3", "tRNA"), ("chrA", "a2", "gene")],
         )
-        self.assertEqual(result[0].quality_reasons, ("generic_product",))
-        self.assertEqual(result[1].recommended_research_focus, ("RNA function",))
+        self.assertEqual(result.candidates[0].quality_reasons, ("generic_product",))
+        self.assertEqual(result.candidates[1].recommended_research_focus, ("RNA function",))
+        self.assertEqual(result.research_history_policy, "include")
+        quality_call = next(arguments for name, arguments in client.calls if name == "list_annotation_quality_candidates")
+        self.assertEqual(quality_call["researchHistoryPolicy"], "include")
+
+    def test_daily_selection_requests_authoritative_coverage_exclusion(self) -> None:
+        client = FakeClient()
+        workflow.enumerate_annotation_candidates(
+            client,
+            {"windowId": "w", "expected_genome": "g"},
+            {"chromosomes": ["chrA", "chrB"]},
+            None,
+            "low-quality",
+            70,
+            None,
+            "exclude-covered",
+            365,
+        )
+        quality_call = next(arguments for name, arguments in client.calls if name == "list_annotation_quality_candidates")
+        self.assertEqual(quality_call["researchHistoryPolicy"], "exclude-covered")
+        self.assertEqual(quality_call["researchRefreshDays"], 365)
 
     def test_quality_score_argument_is_bounded(self) -> None:
         self.assertEqual(workflow.quality_score("70"), 70)
         with self.assertRaises(argparse.ArgumentTypeError):
             workflow.quality_score("101")
+
+    def test_research_refresh_days_is_bounded(self) -> None:
+        self.assertEqual(workflow.research_refresh_days("365"), 365)
+        with self.assertRaises(argparse.ArgumentTypeError):
+            workflow.research_refresh_days("0")
+
+    def test_failed_daily_work_is_retryable_not_covered(self) -> None:
+        self.assertNotIn("failed", workflow.DAILY_COVERED_STATUSES)
+        self.assertIn("completed", workflow.DAILY_COVERED_STATUSES)
+
+    def test_failed_workflow_uses_a_fresh_retry_idempotency_key(self) -> None:
+        base = "gas:v1:abc"
+        key, existing = workflow.select_workflow_attempt(
+            {
+                base: {"status": "failed", "taskId": "failed-1"},
+                f"{base}:retry:1": {"status": "cancelled", "taskId": "failed-2"},
+            },
+            base,
+        )
+        self.assertEqual(key, f"{base}:retry:2")
+        self.assertEqual(existing, {})
+
+        key, existing = workflow.select_workflow_attempt(
+            {base: {"status": "completed", "taskId": "completed-1"}},
+            base,
+        )
+        self.assertEqual(key, base)
+        self.assertEqual(existing["taskId"], "completed-1")
 
     def test_existing_changesets_exclude_active_but_not_rejected(self) -> None:
         identities = workflow.changeset_identities(FakeClient(), {"windowId": "w"})
