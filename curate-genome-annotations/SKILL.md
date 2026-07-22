@@ -1,6 +1,6 @@
 ---
 name: curate-genome-annotations
-description: Load a GenBank, EMBL, or FASTA genome into CodeXomics and use Deep Gene Research (DGR) to produce evidence-backed, human-reviewable annotation ChangeSets for exact coding and non-coding gene annotation features. Use when asked to install, configure, start, or connect CodeXomics and DGR; refine one named gene; process a gene list; prioritize low-quality annotations; select a fixed daily batch; resume a previous run; or prepare a recurring annotation job. Supports external MCP agents and the internal CodeXomics ChatBox. Never use it to silently approve or apply annotation changes.
+description: Load a GenBank, EMBL, or FASTA genome into CodeXomics and use Deep Gene Research (DGR) plus optional user-supplied PDF full text to produce evidence-backed, human-reviewable annotation ChangeSets for exact coding and non-coding gene annotation features. Use when asked to refine one named gene from web literature or PDFs; process a gene list; prioritize low-quality annotations; select a fixed daily batch; resume a run; prepare a recurring annotation job; or install, configure, start, or connect CodeXomics and DGR. Supports external MCP agents and the internal CodeXomics ChatBox. Never use it to silently approve or apply annotation changes.
 ---
 
 # Curate Genome Annotations
@@ -16,6 +16,7 @@ Use CodeXomics as the genome authority and ChangeSet boundary. Use DGR as the ev
 5. Never call `request_annotation_approval`, `apply_annotation_changeset`, raw annotation-editing tools, or rollback tools from an unattended research workflow.
 6. Never give an unattended worker a curator credential. Use a research key limited to `annotation:read`, `annotation:research`, and `annotation:propose`.
 7. Report partial failures per gene. Do not claim an annotation was updated when only a proposal was created.
+8. Treat a PDF as full text only when DGR parses its pages and CodeXomics verifies exact text spans, offsets, and hashes in the archived report. Do not relabel an abstract, snippet, OCR failure, or inaccessible document as full text.
 
 ## Choose the execution path
 
@@ -33,6 +34,7 @@ Read [references/workflows.md](references/workflows.md) before the first run in 
 3. Pin every call with `windowId` and `expected_genome` when multiple windows exist.
 4. Resolve every requested identifier and reject unsupported, identity-unsafe, or ambiguous targets.
 5. Start DGR through CodeXomics with the user's research prompt, aspects, language, and result limit.
+   For one explicit gene, pass user PDFs with repeatable `--pdf` options. User PDFs are screened first, while web discovery still runs and open full text is retrieved when available.
 6. Poll the durable workflow until it reaches a terminal state. Do not infer completion from elapsed time.
 7. Record the archived report attachment, proposal status, ChangeSet ID, and failure reason for each gene.
 8. Direct the human reviewer to CodeXomics **Annotation Review Center** for individual or batch review.
@@ -43,12 +45,16 @@ Use the production runner for repeatable work:
 python3 scripts/run_annotation_workflow.py \
   --genome /absolute/path/to/genome.gbk \
   --gene lysC \
+  --pdf /absolute/path/to/primary-study.pdf \
+  --full-text-policy require \
   --user-prompt "Refine function, regulation, pathway role, complexes, and phenotype with precise citations"
 ```
 
 The runner supports exactly one selector per invocation:
 
 - `--gene lysC` for one exact gene annotation feature.
+- Repeat `--pdf /absolute/paper.pdf` up to eight times for a single `--gene`. The runner validates PDF magic, size, and SHA-256 before CodeXomics uploads and registers each file as a gene-scoped DGR research-source attachment.
+- Use `--full-text-policy prefer` (default), `require`, or `abstract-allowed`. `require` returns a failed run outcome when the archived report has no verified full-text source; it never promotes abstract-only evidence.
 - `--genes lysC,thrB,talB` for an explicit list.
 - `--gene-file /absolute/path/genes.txt` for newline, comma, or tab-separated identifiers.
 - `--daily-count 10` for a deterministic batch ranked by lowest annotation quality first.

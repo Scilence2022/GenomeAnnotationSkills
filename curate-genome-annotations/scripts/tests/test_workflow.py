@@ -89,6 +89,31 @@ class WorkflowHelpersTests(unittest.TestCase):
             path.write_text("lysC # primary\nthrB,talB\n", encoding="utf-8")
             self.assertEqual(workflow.read_gene_file(path), ["lysC", "thrB", "talB"])
 
+    def test_research_pdfs_are_validated_and_content_deduplicated(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "paper-a.pdf"
+            duplicate = root / "paper-b.pdf"
+            payload = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF\n"
+            first.write_bytes(payload)
+            duplicate.write_bytes(payload)
+
+            documents = workflow.validate_research_pdfs([first, duplicate])
+
+            self.assertEqual(len(documents), 1)
+            self.assertEqual(documents[0]["path"], str(first.resolve()))
+            self.assertEqual(documents[0]["name"], first.name)
+            self.assertRegex(documents[0]["sha256"], r"^[a-f0-9]{64}$")
+
+    def test_research_pdf_rejects_non_pdf_and_relative_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            invalid = Path(directory) / "paper.pdf"
+            invalid.write_text("not a pdf", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "not a PDF"):
+                workflow.validate_research_pdfs([invalid])
+        with self.assertRaisesRegex(ValueError, "must be absolute"):
+            workflow.validate_research_pdfs([Path("paper.pdf")])
+
     def test_daily_quality_selection_supports_multiple_gene_feature_types(self) -> None:
         client = FakeClient()
         result = workflow.enumerate_annotation_candidates(
@@ -229,11 +254,16 @@ class WorkflowHelpersTests(unittest.TestCase):
                 "taskId": "task-1",
                 "status": "completed",
                 "target": {"featureType": "CDS", "locusTag": "b0001"},
-                "reportAttachment": {"attachmentId": "a-1", "fileName": "report.json"},
+                "reportAttachment": {
+                    "attachmentId": "a-1",
+                    "fileName": "report.json",
+                    "summary": {"fullTextSourceCount": 2, "fullTextFindingCount": 5},
+                },
                 "result": large,
             }
         )
         self.assertEqual(compact["reportAttachment"]["attachmentId"], "a-1")
+        self.assertEqual(compact["reportAttachment"]["summary"]["fullTextSourceCount"], 2)
         self.assertNotIn("result", compact)
         json.dumps(compact)
 

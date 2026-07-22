@@ -40,6 +40,8 @@ DEFAULT_PROMPT = (
     "Refine this gene annotation feature using organism-specific evidence. Exclude lexical gene-name collisions and "
     "unrelated organisms, label homolog-only evidence, synthesize a concise citation-rich Note, and preserve uncertainty."
 )
+MAX_RESEARCH_PDFS = 8
+MAX_RESEARCH_PDF_BYTES = 20 * 1024 * 1024
 
 
 def utc_now() -> str:
@@ -105,6 +107,38 @@ def read_gene_file(path: Path) -> list[str]:
         if stripped:
             retained.extend(parse_list(stripped))
     return unique_identifiers(retained)
+
+
+def validate_research_pdfs(paths: list[Path]) -> list[dict[str, Any]]:
+    if len(paths) > MAX_RESEARCH_PDFS:
+        raise ValueError(f"At most {MAX_RESEARCH_PDFS} research PDFs may be supplied")
+    documents: list[dict[str, Any]] = []
+    seen_hashes: set[str] = set()
+    for candidate in paths:
+        expanded = candidate.expanduser()
+        if not expanded.is_absolute():
+            raise ValueError(f"Research PDF path must be absolute: {candidate}")
+        resolved = expanded.resolve()
+        if not resolved.is_file():
+            raise ValueError(f"Research PDF does not exist: {resolved}")
+        size = resolved.stat().st_size
+        if size <= 0 or size > MAX_RESEARCH_PDF_BYTES:
+            raise ValueError(
+                f"Research PDF must be between 1 byte and {MAX_RESEARCH_PDF_BYTES} bytes: {resolved}"
+            )
+        with resolved.open("rb") as handle:
+            if handle.read(5) != b"%PDF-":
+                raise ValueError(f"Research document is not a PDF: {resolved}")
+            handle.seek(0)
+            sha256 = hashlib.sha256()
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                sha256.update(chunk)
+        content_hash = sha256.hexdigest()
+        if content_hash in seen_hashes:
+            continue
+        seen_hashes.add(content_hash)
+        documents.append({"path": str(resolved), "name": resolved.name, "size": size, "sha256": content_hash})
+    return documents
 
 
 def atomic_json_write(path: Path, payload: object) -> None:
@@ -419,7 +453,7 @@ def compact_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
         "changeSetStatus": workflow.get("changeSetStatus"),
         "reportAttachment": {
             key: attachment.get(key)
-            for key in ("attachmentId", "geneId", "fileName", "size", "sha256", "storedAt")
+            for key in ("attachmentId", "geneId", "fileName", "size", "sha256", "storedAt", "summary")
             if attachment and attachment.get(key) is not None
         }
         if attachment
@@ -556,6 +590,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-result", type=int, choices=range(1, 21), default=10, metavar="1..20")
     parser.add_argument("--force-refresh", action="store_true")
     parser.add_argument(
+        "--pdf",
+        dest="research_pdfs",
+        action="append",
+        type=Path,
+        default=[],
+        help="Absolute user PDF path to prioritize as full-text evidence; repeat up to 8 times (single --gene only)",
+    )
+    parser.add_argument(
+        "--full-text-policy",
+        choices=("prefer", "require", "abstract-allowed"),
+        default="prefer",
+        help="Whether a completed workflow must contain verified full text (default: prefer)",
+    )
+    parser.add_argument(
         "--include-researched",
         action="store_true",
         help="Allow daily selection to repeat targets with active or durably completed CodeXomics research",
@@ -594,6 +642,14 @@ def main() -> int:
         if not args.gene_file.is_file():
             print(f"ERROR: gene file does not exist: {args.gene_file}", file=sys.stderr)
             return 2
+    try:
+        research_documents = validate_research_pdfs(args.research_pdfs)
+    except (OSError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    if research_documents and not args.gene:
+        print("ERROR: --pdf is limited to a single explicit --gene workflow", file=sys.stderr)
+        return 2
 
     stat_info = genome_path.stat()
     genome_key = digest(
@@ -611,6 +667,11 @@ def main() -> int:
         "genomePath": str(genome_path),
         "selector": "daily-count" if args.daily_count else "explicit",
         "dryRun": args.dry_run,
+        "fullTextPolicy": args.full_text_policy,
+        "researchDocuments": [
+            {key: document[key] for key in ("name", "size", "sha256")}
+            for document in research_documents
+        ],
         "results": [],
         "automatedApprovalOrApplication": False,
     }
@@ -733,6 +794,8 @@ def main() -> int:
                     "language": args.language,
                     "maxResult": args.max_result,
                     "forceRefresh": args.force_refresh,
+                    "researchDocumentSha256": [document["sha256"] for document in research_documents],
+                    "fullTextPolicy": args.full_text_policy,
                 }
                 for candidate in candidates:
                     result: dict[str, Any] = {
@@ -797,6 +860,7 @@ def main() -> int:
                                 "language": args.language,
                                 "maxResult": args.max_result,
                                 "forceRefresh": args.force_refresh,
+                                "researchDocumentPaths": [document["path"] for document in research_documents],
                                 "repeatPolicy":
                                     "skip-covered"
                                     if args.daily_count and not args.include_researched
@@ -846,6 +910,16 @@ def main() -> int:
                             compact = compact_workflow(workflow)
                             result.update(compact)
                             if normalized(compact.get("status")) == "completed":
+                                attachment_summary = (
+                                    compact.get("reportAttachment", {}).get("summary", {})
+                                    if isinstance(compact.get("reportAttachment"), dict)
+                                    else {}
+                                )
+                                full_text_count = int(attachment_summary.get("fullTextSourceCount") or 0)
+                                full_text_finding_count = int(attachment_summary.get("fullTextFindingCount") or 0)
+                                result["fullTextSourceCount"] = full_text_count
+                                result["fullTextFindingCount"] = full_text_finding_count
+                                result["fullTextRequirementMet"] = full_text_count > 0
                                 if compact.get("changeSetId"):
                                     result["curationOutcome"] = "changeset_created"
                                 else:
@@ -853,6 +927,15 @@ def main() -> int:
                                     result["curationIssue"] = (
                                         compact.get("proposalReason")
                                         or "Research completed without a reviewable annotation ChangeSet"
+                                    )
+                                if args.full_text_policy == "require" and full_text_count == 0:
+                                    result["curationOutcome"] = "full_text_required_but_unavailable"
+                                    result["curationIssue"] = (
+                                        "Research completed without a verified full-text source; annotation review must not treat it as a full-text report"
+                                    )
+                                elif research_documents and full_text_count == 0:
+                                    result["curationWarning"] = (
+                                        "The user PDFs were parsed or screened but none produced exact-target full-text evidence"
                                     )
                         result["finishedAt"] = utc_now()
                         record = state["workflows"].setdefault(key, {})
@@ -901,6 +984,10 @@ def main() -> int:
             "completedWithoutChangeSet": sum(
                 1 for item in summary["results"] if item.get("curationOutcome") == "no_changeset"
             ),
+            "fullTextRequirementFailures": sum(
+                1 for item in summary["results"]
+                if item.get("curationOutcome") == "full_text_required_but_unavailable"
+            ),
             "dryRunEligible": sum(
                 1 for item in summary.get("candidates", []) if item.get("eligible") is True
             ),
@@ -916,7 +1003,11 @@ def main() -> int:
         unsuccessful = sum(
             1 for item in summary["results"] if normalized(item.get("status")) != "completed"
         )
-        return 1 if unsuccessful or summary["counts"]["completedWithoutChangeSet"] else 0
+        return 1 if (
+            unsuccessful
+            or summary["counts"]["completedWithoutChangeSet"]
+            or summary["counts"]["fullTextRequirementFailures"]
+        ) else 0
     except (McpError, RuntimeError, OSError, ValueError) as exc:
         summary.update({"finishedAt": utc_now(), "fatalError": str(exc)})
         print(json.dumps(summary, indent=2, ensure_ascii=False), file=sys.stderr)

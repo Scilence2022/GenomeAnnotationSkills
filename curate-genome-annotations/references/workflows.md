@@ -15,12 +15,24 @@ Use CodeXomics MCP tools mode as the only client-facing orchestration endpoint. 
 2. Call `load_genome_file` with an absolute path unless the intended file is already loaded.
 3. Call `list_genome_windows`, identify the correct window, and attach its `windowId` and `expected_genome` to subsequent calls.
 4. Call `resolve_annotation_target`. Require a supported gene-associated feature and a stable locus tag, protein identifier, or gene symbol. Co-located records resolve to CDS first, then a specific RNA/transcript feature, then generic gene.
-5. Call `start_annotation_research`. The loaded genome supplies organism metadata when available; supply `organism` only as a fallback.
+5. Call `start_annotation_research`. The loaded genome supplies organism metadata when available; supply `organism` only as a fallback. For user PDFs, pass absolute paths in `researchDocumentPaths`; CodeXomics uploads them to DGR and binds the resulting content-addressed document IDs to the workflow.
 6. Save the returned `workflow.taskId` immediately.
 7. Poll `get_annotation_research_workflow` with bounded backoff. Terminal states are `completed`, `failed`, and `cancelled`. A completed DGR task may still produce no ChangeSet if evidence or target binding is insufficient.
 8. Return `workflow.reportAttachment`, `workflow.proposalStatus`, `workflow.changeSetId`, and `workflow.changeSetStatus`.
 
 Do not call DGR directly unless CodeXomics orchestration is unavailable and the user explicitly accepts the advanced recovery path. A direct DGR result must still be archived and rebound through CodeXomics before a ChangeSet can be created.
+
+## User PDFs and full-text evidence
+
+Use PDFs only for one explicitly resolved gene per invocation. This prevents a document from being silently treated as direct evidence for every member of a batch.
+
+1. Validate each absolute path, PDF signature, 20 MiB size limit, and SHA-256. Deduplicate identical content and accept at most eight documents.
+2. Send the paths only to CodeXomics. CodeXomics grants narrowly scoped file access, uploads the bytes over the authenticated DGR connection, stores the returned content-addressed IDs as gene-scoped attachments, and includes those IDs in workflow idempotency.
+3. DGR parses all text-bearing pages before web discovery synthesis, screens exact target relevance, then continues database/web searches and retrieves available PMC XML full text. User PDFs are prioritized evidence, not a reason to skip broader retrieval.
+4. Accept a full-text finding only when it is an exact excerpt with document/text SHA-256, UTF-16 offsets, optional page locator, PMID citation when available, and an archived source binding. Keep unusable scans, target-negative PDFs, and abstract-only records visible as coverage gaps.
+5. Inspect `reportAttachment.summary.fullTextSourceCount` and `fullTextFindingCount`. Under `--full-text-policy require`, treat zero verified full-text sources as a workflow failure even if DGR otherwise completed.
+
+The current parser handles text-bearing PDFs and PMC XML. Image-only scans or complex tables may require future OCR/table extraction; report that limitation explicitly rather than fabricating coverage.
 
 ## Internal CodeXomics ChatBox
 

@@ -157,6 +157,19 @@ python3 curate-genome-annotations/scripts/run_annotation_workflow.py \
   --genes lysC,thrB,talB
 ```
 
+### One gene with user PDF full text
+
+```bash
+python3 curate-genome-annotations/scripts/run_annotation_workflow.py \
+  --genome /absolute/path/genome.gbk \
+  --gene lysC \
+  --pdf /absolute/path/primary-study.pdf \
+  --pdf /absolute/path/supplementary-study.pdf \
+  --full-text-policy require
+```
+
+PDF inputs are available only for a single explicit gene. CodeXomics registers each validated PDF as a gene-scoped attachment; DGR parses text-bearing pages, continues web/PMC retrieval, and records exact full-text excerpts with content hashes and offsets. `require` fails the run outcome if no verified full-text source survives exact-target screening. Image-only scans currently report an OCR limitation instead of being mislabeled as full text.
+
 ### Gene file
 
 ```bash
@@ -190,6 +203,7 @@ A successful research run reports, per gene:
 - the resolved feature type and exact target;
 - DGR task status and task ID;
 - archived report attachment metadata;
+- verified full-text source and finding counts when available;
 - annotation proposal status;
 - ChangeSet ID and review status;
 - any failure or skipped reason.
