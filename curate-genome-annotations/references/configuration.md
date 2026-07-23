@@ -36,6 +36,8 @@ export MCP_SERVER_BASE_URL=http://127.0.0.1:3000
 
 Use one DGR process per JSON ledger. Do not point multiple processes at the same task file. The task file can contain research inputs and outputs; protect it accordingly.
 
+User research PDFs are stored by DGR as content-addressed, mode-`0600` documents. Set `MCP_RESEARCH_DOCUMENT_STORAGE_DIR` to a protected persistent directory if the default `.dgr-research-documents` location is unsuitable. Do not place this directory in a web-served tree or shared source checkout.
+
 ## Model provider
 
 Select a provider and appropriate models using DGR variables such as:
