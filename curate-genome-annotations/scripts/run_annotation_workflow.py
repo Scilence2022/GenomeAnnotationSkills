@@ -677,7 +677,7 @@ def main() -> int:
     }
 
     try:
-        with GenomeLock(lock_path), McpHttpClient(args.codexomics_url, token=token, timeout=35.0) as client:
+        with GenomeLock(lock_path), McpHttpClient(args.codexomics_url, token=token, timeout=120.0) as client:
             missing = require_tools(client, REQUIRED_TOOLS)
             if missing:
                 raise RuntimeError(
