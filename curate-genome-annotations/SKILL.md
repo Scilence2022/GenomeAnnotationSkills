@@ -33,7 +33,7 @@ Read [references/workflows.md](references/workflows.md) before the first run in 
 2. Load the user's absolute genome path. If it is already loaded in the intended window, reuse that window.
 3. Pin every call with `windowId` and `expected_genome` when multiple windows exist.
 4. Resolve every requested identifier and reject unsupported, identity-unsafe, or ambiguous targets.
-5. Start DGR through CodeXomics with the user's research prompt, aspects, language, and result limit.
+5. Start DGR through CodeXomics with the user's research prompt, aspects, language, result limit, and literature/full-text budgets. Comprehensive analysis is the default: literature coverage is bounded by the literature budget, not by a fixed small ceiling.
    For one explicit gene, pass user PDFs with repeatable `--pdf` options. User PDFs are screened first, while web discovery still runs and open full text is retrieved when available.
 6. Poll the durable workflow until it reaches a terminal state. Do not infer completion from elapsed time.
 7. Record the archived report attachment, proposal status, ChangeSet ID, and failure reason for each gene.
@@ -59,6 +59,7 @@ The runner supports exactly one selector per invocation:
 - `--gene-file /absolute/path/genes.txt` for newline, comma, or tab-separated identifiers.
 - `--daily-count 10` for a deterministic batch ranked by lowest annotation quality first.
 - Add `--maximum-quality-score 70` to set the low-quality threshold, `--feature-types CDS,tRNA,rRNA,ncRNA,gene` to restrict types, or `--selection-policy coordinate` to retain coordinate-order coverage.
+- `--max-result N` (1..100, default 10) caps results per search query; `--literature-budget N` (10..2000, default 300) bounds the total PubMed abstracts DGR reads per gene; `--full-text-budget N` (1..100, default 25) bounds the open-access full texts attempted. Comprehensive runs use the budgets, not the per-query cap, to control depth. These require a matching DGR version; older DGR builds reject values above their documented limits.
 - Daily mode uses the CodeXomics per-genome research ledger to exclude active and durably completed DGR targets across agents and state directories. Use `--research-refresh-days N` for scheduled refresh or `--include-researched` only for an intentional repeat campaign.
 
 Run with `--dry-run` before a new batch policy. The runner never approves or applies ChangeSets.

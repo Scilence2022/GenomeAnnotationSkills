@@ -65,6 +65,10 @@ The URL must be the reachable SearXNG base URL, not the DGR URL. Confirm SearXNG
 
 Optionally set `NCBI_API_KEY` for higher NCBI rate limits. Search credentials improve retrieval but do not replace identity filtering: every retained source must refer to the exact gene/protein and organism or provide explicitly relevant homolog evidence.
 
+## Literature budgets
+
+Comprehensive literature analysis is the default. The runner passes `literatureBudget` (10..2000, default 300) and `fullTextBudget` (1..100, default 25) through `start_annotation_research` to DGR, and `--max-result` (1..100) caps results per query. DGR pages the complete PubMed match set up to the literature budget and records a `literatureCoverage` audit (budget, total matches, retained abstracts, Gene-linked bibliography completeness) in the archived workflow; the runner surfaces it per gene. These knobs require a matching DGR version — older DGR builds reject budgets and `--max-result` above 20.
+
 ## MCP client variables
 
 The bundled scripts recognize:

@@ -458,6 +458,9 @@ def compact_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
         }
         if attachment
         else None,
+        "literatureCoverage": workflow.get("literatureCoverage"),
+        "llmSynthesis": workflow.get("llmSynthesis"),
+        "researchCoverage": workflow.get("researchCoverage"),
     }
 
 
@@ -587,7 +590,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--research-focus", action="append", default=[])
     parser.add_argument("--specific-aspect", action="append", default=[])
     parser.add_argument("--language", default="English")
-    parser.add_argument("--max-result", type=int, choices=range(1, 21), default=10, metavar="1..20")
+    parser.add_argument("--max-result", type=int, choices=range(1, 101), default=10, metavar="1..100")
+    parser.add_argument(
+        "--literature-budget",
+        type=int,
+        choices=range(10, 2001),
+        default=300,
+        metavar="10..2000",
+        help="Total PubMed abstracts DGR retains per gene for synthesis (default: 300)",
+    )
+    parser.add_argument(
+        "--full-text-budget",
+        type=int,
+        choices=range(1, 101),
+        default=25,
+        metavar="1..100",
+        help="Open-access full texts DGR attempts per gene for verifiable evidence spans (default: 25)",
+    )
     parser.add_argument("--force-refresh", action="store_true")
     parser.add_argument(
         "--pdf",
@@ -793,6 +812,8 @@ def main() -> int:
                     "specificAspects": args.specific_aspect,
                     "language": args.language,
                     "maxResult": args.max_result,
+                    "literatureBudget": args.literature_budget,
+                    "fullTextBudget": args.full_text_budget,
                     "forceRefresh": args.force_refresh,
                     "researchDocumentSha256": [document["sha256"] for document in research_documents],
                     "fullTextPolicy": args.full_text_policy,
@@ -859,6 +880,8 @@ def main() -> int:
                                 "userPrompt": args.user_prompt,
                                 "language": args.language,
                                 "maxResult": args.max_result,
+                                "literatureBudget": args.literature_budget,
+                                "fullTextBudget": args.full_text_budget,
                                 "forceRefresh": args.force_refresh,
                                 "researchDocumentPaths": [document["path"] for document in research_documents],
                                 "repeatPolicy":
@@ -920,6 +943,25 @@ def main() -> int:
                                 result["fullTextSourceCount"] = full_text_count
                                 result["fullTextFindingCount"] = full_text_finding_count
                                 result["fullTextRequirementMet"] = full_text_count > 0
+                                literature_coverage = (
+                                    compact.get("literatureCoverage")
+                                    or attachment_summary.get("literatureCoverage")
+                                )
+                                if isinstance(literature_coverage, dict):
+                                    result["literatureCoverage"] = {
+                                        "literatureBudget": literature_coverage.get("literatureBudget"),
+                                        "pubmedTotalMatchCount": literature_coverage.get("pubmedTotalMatchCount"),
+                                        "retainedAbstractCount": literature_coverage.get("retainedAbstractCount"),
+                                        "linkedBibliographyRetrieved": literature_coverage.get("linkedBibliographyRetrieved"),
+                                        "linkedBibliographyRequested": literature_coverage.get("linkedBibliographyRequested"),
+                                        "linkedBibliographyComplete": literature_coverage.get("linkedBibliographyComplete"),
+                                    }
+                                    result["literatureCoverageComplete"] = (
+                                        literature_coverage.get("linkedBibliographyComplete") is True
+                                    )
+                                llm_synthesis = compact.get("llmSynthesis") or attachment_summary.get("llmSynthesis")
+                                if isinstance(llm_synthesis, dict):
+                                    result["llmSynthesis"] = llm_synthesis
                                 if compact.get("changeSetId"):
                                     result["curationOutcome"] = "changeset_created"
                                 else:
