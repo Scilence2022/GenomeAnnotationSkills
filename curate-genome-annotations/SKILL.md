@@ -87,6 +87,7 @@ Return a concise run summary containing:
 - archived full-report attachment ID/file name when present;
 - annotation proposal status;
 - ChangeSet ID and review status;
+- Genome Annotation Note summary: whether the report carries a mutation-ready citation-bound `/note` text or only an informational summary, and its included/cited fact counts when available;
 - failures or skipped reasons;
 - explicit statement that no ChangeSet was approved or applied automatically.
 

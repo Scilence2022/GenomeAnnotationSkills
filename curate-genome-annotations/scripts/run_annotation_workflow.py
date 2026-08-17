@@ -461,6 +461,7 @@ def compact_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
         "literatureCoverage": workflow.get("literatureCoverage"),
         "llmSynthesis": workflow.get("llmSynthesis"),
         "researchCoverage": workflow.get("researchCoverage"),
+        "annotationNote": workflow.get("annotationNote"),
     }
 
 
@@ -962,6 +963,26 @@ def main() -> int:
                                 llm_synthesis = compact.get("llmSynthesis") or attachment_summary.get("llmSynthesis")
                                 if isinstance(llm_synthesis, dict):
                                     result["llmSynthesis"] = llm_synthesis
+                                annotation_note = compact.get("annotationNote") or attachment_summary.get("annotationNote")
+                                if isinstance(annotation_note, dict):
+                                    result["annotationNote"] = {
+                                        "mutationReady": bool(annotation_note.get("text")),
+                                        "textLength": len(str(annotation_note.get("text") or "")),
+                                        "segmentCount": len(annotation_note.get("segments") or []),
+                                        "citedSegmentCount": sum(
+                                            1
+                                            for segment in (annotation_note.get("segments") or [])
+                                            if isinstance(segment, dict) and segment.get("citations")
+                                        ),
+                                        "includedFactCount": (
+                                            annotation_note.get("coverage") or {}
+                                        ).get("includedFactCount"),
+                                        "availableFactCount": (
+                                            annotation_note.get("coverage") or {}
+                                        ).get("availableFactCount"),
+                                    }
+                                else:
+                                    result["annotationNote"] = {"mutationReady": False, "textLength": 0}
                                 if compact.get("changeSetId"):
                                     result["curationOutcome"] = "changeset_created"
                                 else:
