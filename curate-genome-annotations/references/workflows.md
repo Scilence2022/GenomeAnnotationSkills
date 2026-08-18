@@ -28,11 +28,11 @@ Use PDFs only for one explicitly resolved gene per invocation. This prevents a d
 
 1. Validate each absolute path, PDF signature, 20 MiB size limit, and SHA-256. Deduplicate identical content and accept at most eight documents.
 2. Send the paths only to CodeXomics. CodeXomics grants narrowly scoped file access, uploads the bytes over the authenticated DGR connection, stores the returned content-addressed IDs as gene-scoped attachments, and includes those IDs in workflow idempotency.
-3. DGR parses all text-bearing pages before web discovery synthesis, screens exact target relevance, then continues database/web searches and retrieves available PMC XML full text. User PDFs are prioritized evidence, not a reason to skip broader retrieval.
+3. DGR parses all text-bearing pages before web discovery synthesis, screens exact target relevance, then continues database/web searches and runs its full-text provider waterfall: Europe PMC JATS XML, PubTator BioC (pre-sectioned, entity-annotated), bioRxiv/medRxiv preprint PDFs, then open-access copies located via OpenAlex (GROBID TEI), CORE, and Unpaywall. Works Crossref reports as retracted are excluded from evidence. User PDFs are prioritized evidence, not a reason to skip broader retrieval.
 4. Accept a full-text finding only when it is an exact excerpt with document/text SHA-256, UTF-16 offsets, optional page locator, PMID citation when available, and an archived source binding. Keep unusable scans, target-negative PDFs, and abstract-only records visible as coverage gaps.
 5. Inspect `reportAttachment.summary.fullTextSourceCount` and `fullTextFindingCount`. Under `--full-text-policy require`, treat zero verified full-text sources as a workflow failure even if DGR otherwise completed.
 
-The current parser handles text-bearing PDFs and PMC XML. Image-only scans or complex tables may require future OCR/table extraction; report that limitation explicitly rather than fabricating coverage.
+The current parsers handle text-bearing PDFs, PMC JATS XML, PubTator BioC, and GROBID TEI; every format is normalized to the same canonical text with SHA-256 hashes and UTF-16 offsets before evidence is accepted. Image-only scans or complex tables may require future OCR/table extraction; report that limitation explicitly rather than fabricating coverage.
 
 ## Internal CodeXomics ChatBox
 

@@ -168,7 +168,7 @@ python3 curate-genome-annotations/scripts/run_annotation_workflow.py \
   --full-text-policy require
 ```
 
-PDF inputs are available only for a single explicit gene. CodeXomics registers each validated PDF as a gene-scoped attachment; DGR parses text-bearing pages, continues web/PMC retrieval, and records exact full-text excerpts with content hashes and offsets. `require` fails the run outcome if no verified full-text source survives exact-target screening. Image-only scans currently report an OCR limitation instead of being mislabeled as full text.
+PDF inputs are available only for a single explicit gene. CodeXomics registers each validated PDF as a gene-scoped attachment; DGR parses text-bearing pages, continues web/database retrieval plus its open full-text waterfall (Europe PMC, PubTator, bioRxiv, OpenAlex, CORE, Unpaywall), and records exact full-text excerpts with content hashes and offsets. `require` fails the run outcome if no verified full-text source survives exact-target screening. Image-only scans currently report an OCR limitation instead of being mislabeled as full text.
 
 ### Gene file
 
