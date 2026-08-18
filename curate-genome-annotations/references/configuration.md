@@ -63,7 +63,7 @@ export MCP_SEARXNG_SCOPE=academic
 
 The URL must be the reachable SearXNG base URL, not the DGR URL. Confirm SearXNG returns JSON search results. DGR also supports provider-specific variables for Tavily, Firecrawl, Exa, Bocha, and model-based search; consult the installed `env.tpl`.
 
-Optionally set `NCBI_API_KEY` for higher NCBI rate limits. Search credentials improve retrieval but do not replace identity filtering: every retained source must refer to the exact gene/protein and organism or provide explicitly relevant homolog evidence.
+Optionally set `NCBI_API_KEY` for higher NCBI/PubTator rate limits. DGR's full-text provider layer has its own optional variables (all free tiers unless noted): `CROSSREF_MAILTO` and `UNPAYWALL_EMAIL` take a contact email only — no registration — and enable the Crossref polite pool (license and retraction metadata) plus the Unpaywall open-access PDF fallback. `ASTA_API_KEY`, `OPENALEX_API_KEY` (paid per-download TEI, capped daily), and `CORE_API_KEY` add snippet/structured/repository fallbacks when present. `FULL_TEXT_PROVIDERS` is a comma-separated whitelist override; the free Tier 1 providers (Europe PMC, PubTator, Crossref, bioRxiv) need no credentials. Search credentials improve retrieval but do not replace identity filtering: every retained source must refer to the exact gene/protein and organism or provide explicitly relevant homolog evidence.
 
 ## Literature budgets
 
