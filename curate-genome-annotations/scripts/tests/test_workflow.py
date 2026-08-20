@@ -135,6 +135,97 @@ class WorkflowHelpersTests(unittest.TestCase):
         quality_call = next(arguments for name, arguments in client.calls if name == "list_annotation_quality_candidates")
         self.assertEqual(quality_call["researchHistoryPolicy"], "include")
 
+    def test_random_selection_asks_for_deterministic_order_within_the_quality_pool(self) -> None:
+        client = FakeClient()
+        workflow.enumerate_annotation_candidates(
+            client,
+            {"windowId": "w", "expected_genome": "g"},
+            {"chromosomes": ["chrA", "chrB"]},
+            None,
+            "random",
+            70,
+            None,
+        )
+        call = next(arguments for name, arguments in client.calls if name == "list_annotation_quality_candidates")
+        # Coordinate order is the deterministic base the local shuffle needs.
+        self.assertEqual(call["sortBy"], "coordinate")
+        # Random samples inside the threshold; coordinate coverage ignores it.
+        self.assertEqual(call["maximumQualityScore"], 70)
+
+    def test_coordinate_selection_still_ignores_the_quality_threshold(self) -> None:
+        client = FakeClient()
+        workflow.enumerate_annotation_candidates(
+            client,
+            {"windowId": "w", "expected_genome": "g"},
+            {"chromosomes": ["chrA", "chrB"]},
+            None,
+            "coordinate",
+            70,
+            None,
+        )
+        call = next(arguments for name, arguments in client.calls if name == "list_annotation_quality_candidates")
+        self.assertEqual(call["maximumQualityScore"], 100)
+
+    def test_random_ranking_is_reproducible_and_seed_dependent(self) -> None:
+        candidates = [workflow.Candidate(identifier=f"gene{index}") for index in range(30)]
+        first = workflow.rank_candidates(candidates, "random", "seed-a")
+        again = workflow.rank_candidates(candidates, "random", "seed-a")
+        other = workflow.rank_candidates(candidates, "random", "seed-b")
+
+        self.assertEqual([item.identifier for item in first], [item.identifier for item in again])
+        self.assertNotEqual([item.identifier for item in first], [item.identifier for item in other])
+        self.assertCountEqual([item.identifier for item in first], [item.identifier for item in candidates])
+
+    def test_random_ranking_keeps_its_order_when_covered_genes_drop_out(self) -> None:
+        candidates = [workflow.Candidate(identifier=f"gene{index}") for index in range(30)]
+        ranked = [item.identifier for item in workflow.rank_candidates(candidates, "random", "seed-a")]
+
+        # Yesterday's batch completed and is now excluded by coverage.
+        covered = set(ranked[:10])
+        remaining = [item for item in candidates if item.identifier not in covered]
+        continued = [item.identifier for item in workflow.rank_candidates(remaining, "random", "seed-a")]
+
+        # The next batch continues where the last one stopped instead of
+        # reshuffling the whole pool.
+        self.assertEqual(continued[:10], ranked[10:20])
+
+    def test_random_ranking_is_case_insensitive_on_identifiers(self) -> None:
+        lower = workflow.rank_candidates([workflow.Candidate(identifier="lysc")], "random", "s")
+        upper = workflow.rank_candidates([workflow.Candidate(identifier="LysC")], "random", "s")
+        self.assertEqual(
+            workflow.random_selection_key("s", lower[0].identifier),
+            workflow.random_selection_key("s", upper[0].identifier),
+        )
+
+    def test_non_random_policies_preserve_the_codexomics_order(self) -> None:
+        candidates = [workflow.Candidate(identifier=f"gene{index}") for index in range(5)]
+        for policy in ("low-quality", "coordinate"):
+            self.assertEqual(workflow.rank_candidates(candidates, policy, None), candidates)
+
+    def test_random_policy_refuses_to_run_without_a_seed(self) -> None:
+        with self.assertRaises(RuntimeError):
+            workflow.rank_candidates([workflow.Candidate(identifier="a")], "random", None)
+
+    def test_random_seed_prefers_the_most_stable_source(self) -> None:
+        self.assertEqual(
+            workflow.resolve_random_seed("pinned", "run-7", "genome-key", "2026-08-20"),
+            ("pinned", "explicit"),
+        )
+        self.assertEqual(
+            workflow.resolve_random_seed(None, "run-7", "genome-key", "2026-08-20"),
+            ("run-7", "run-id"),
+        )
+        # No stable identifier: same genome and same UTC day resolve alike, so a
+        # rerun that day continues the same batch.
+        self.assertEqual(
+            workflow.resolve_random_seed(None, None, "genome-key", "2026-08-20"),
+            ("genome-key:2026-08-20", "genome-and-utc-date"),
+        )
+        self.assertNotEqual(
+            workflow.resolve_random_seed(None, None, "genome-key", "2026-08-21")[0],
+            workflow.resolve_random_seed(None, None, "genome-key", "2026-08-20")[0],
+        )
+
     def test_daily_selection_requests_authoritative_coverage_exclusion(self) -> None:
         client = FakeClient()
         workflow.enumerate_annotation_candidates(

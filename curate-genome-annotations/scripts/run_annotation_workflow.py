@@ -398,8 +398,13 @@ def enumerate_annotation_candidates(
     candidates: list[Candidate] = []
     arguments: dict[str, Any] = {
         **route,
+        # CodeXomics ranks by quality or coordinate. The random policy asks for
+        # coordinate order because it is deterministic, then reorders locally.
         "sortBy": "quality" if selection_policy == "low-quality" else "coordinate",
-        "maximumQualityScore": maximum_quality_score if selection_policy == "low-quality" else 100,
+        # Random sampling stays inside the quality threshold, so a batch can be
+        # "10 random genes among the poorly annotated ones". Pass 100 to sample
+        # the whole genome. Coordinate coverage deliberately ignores it.
+        "maximumQualityScore": 100 if selection_policy == "coordinate" else maximum_quality_score,
         "limit": 0,
         "offset": 0,
         "researchHistoryPolicy": research_history_policy,
@@ -449,6 +454,45 @@ def enumerate_annotation_candidates(
         excluded_by_research_history=excluded_by_history,
         research_history_policy=str(payload.get("researchHistoryPolicy") or research_history_policy),
     )
+
+
+def resolve_random_seed(
+    explicit_seed: str | None, explicit_run_id: str | None, genome_key: str, today: str
+) -> tuple[str, str]:
+    """Pick the seed for the random policy, preferring the most stable source.
+
+    A random batch must be reproducible: if a run dies halfway, the rerun has to
+    pick the same genes, otherwise it abandons the targets it already submitted
+    to DGR and pays for a fresh set. So the seed never comes from anything that
+    changes per invocation.
+    """
+    if explicit_seed:
+        return str(explicit_seed), "explicit"
+    if explicit_run_id:
+        return str(explicit_run_id), "run-id"
+    return f"{genome_key}:{today}", "genome-and-utc-date"
+
+
+def random_selection_key(seed: str, identifier: str) -> str:
+    """Stable pseudo-random rank for one candidate under one seed.
+
+    Hashing each identifier independently, rather than shuffling the list, keeps
+    the surviving order unchanged when candidates drop out of the pool. A rerun
+    after four of ten genes completed therefore continues with the same next
+    six, in the same order.
+    """
+    return hashlib.sha256(f"{seed}\x00{normalized(identifier)}".encode("utf-8")).hexdigest()
+
+
+def rank_candidates(
+    candidates: list[Candidate], selection_policy: str, random_seed: str | None
+) -> list[Candidate]:
+    """Apply any client-side ordering CodeXomics cannot express itself."""
+    if selection_policy != "random":
+        return candidates
+    if not random_seed:
+        raise RuntimeError("The random selection policy requires a resolved seed")
+    return sorted(candidates, key=lambda candidate: random_selection_key(random_seed, candidate.identifier))
 
 
 def compact_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
@@ -782,15 +826,22 @@ def parse_args() -> argparse.Namespace:
     selector.add_argument("--daily-count", type=positive_integer)
     parser.add_argument(
         "--selection-policy",
-        choices=("low-quality", "coordinate"),
+        choices=("low-quality", "coordinate", "random"),
         default="low-quality",
-        help="Daily candidate ranking policy (default: low-quality)",
+        help="Daily candidate ranking policy (default: low-quality). random samples the eligible pool "
+        "reproducibly; it still honours --maximum-quality-score, so pass 100 to sample every feature",
+    )
+    parser.add_argument(
+        "--random-seed",
+        help="Seed for --selection-policy random. Defaults to --run-id when you supply one, otherwise "
+        "to the genome and the UTC date, so a same-day rerun resumes the same batch",
     )
     parser.add_argument(
         "--maximum-quality-score",
         type=quality_score,
         default=70,
-        help="Maximum CodeXomics quality score selected by low-quality policy (default: 70)",
+        help="Maximum CodeXomics quality score selected by the low-quality and random policies "
+        "(default: 70; the coordinate policy ignores it)",
     )
     parser.add_argument(
         "--feature-types",
@@ -948,6 +999,9 @@ def main() -> int:
     )
     started_at = utc_now()
     run_id = args.run_id or f"gas-run-{digest({'genome': genome_key, 'startedAt': started_at}, 16)}"
+    random_seed, random_seed_source = resolve_random_seed(
+        args.random_seed, args.run_id, genome_key, started_at[:10]
+    )
     try:
         pricing = PricingBook.resolve(args.pricing_file)
     except ValueError as exc:
@@ -959,6 +1013,12 @@ def main() -> int:
         accounting_warnings.append(
             "No pricing file configured; token counts are reported but cost is unavailable. "
             "Pass --pricing-file or set GENOME_ANNOTATION_PRICING_FILE."
+        )
+    if args.selection_policy == "random" and random_seed_source == "genome-and-utc-date":
+        accounting_warnings.append(
+            f"Random selection is seeded from the genome and the UTC date ({random_seed_source}); "
+            "a rerun after midnight UTC samples a different batch. Pass --run-id or --random-seed "
+            "to pin it."
         )
 
     summary: dict[str, Any] = {
@@ -1033,12 +1093,15 @@ def main() -> int:
                     and record.get("selectionMode") == "daily-count"
                     and normalized(record.get("status")) in DAILY_COVERED_STATUSES
                 }
-                candidates = [
+                eligible = [
                     candidate
                     for candidate in all_candidates
                     if normalized(candidate.identifier) not in excluded_changesets
                     and normalized(candidate.identifier) not in completed_daily
-                ][: args.daily_count]
+                ]
+                # Rank only what survived every coverage exclusion, so the
+                # policy chooses among genes that are actually curatable.
+                candidates = rank_candidates(eligible, args.selection_policy, random_seed)[: args.daily_count]
                 summary["selection"] = {
                     "requested": args.daily_count,
                     "qualityMatchingFeatures": selection.quality_matching_features,
@@ -1049,8 +1112,17 @@ def main() -> int:
                     "policy": args.selection_policy,
                     "researchHistoryPolicy": selection.research_history_policy,
                     "researchRefreshDays": args.research_refresh_days,
-                    "maximumQualityScore": args.maximum_quality_score,
+                    "maximumQualityScore": (
+                        100 if args.selection_policy == "coordinate" else args.maximum_quality_score
+                    ),
                     "featureTypes": requested_feature_types or "CodeXomics defaults",
+                    # Recorded so any random batch can be reproduced exactly by
+                    # rerunning with --random-seed set to this value.
+                    **(
+                        {"randomSeed": random_seed, "randomSeedSource": random_seed_source}
+                        if args.selection_policy == "random"
+                        else {}
+                    ),
                 }
             else:
                 identifiers = (

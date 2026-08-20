@@ -96,4 +96,4 @@ Alert when the service is unavailable, a run produces no ChangeSet for multiple 
 
 ## Changing policy
 
-Changing the count, prompt, result limit, selection filter, or genome changes the scientific run policy. Record the change and dry-run the next selection. Do not reset coverage state merely to make the new policy start at the first coordinate; use a new state directory or an explicit reset procedure approved by the operator.
+Changing the count, prompt, result limit, selection filter, random seed, or genome changes the scientific run policy. Record the change and dry-run the next selection. Do not reset coverage state merely to make the new policy start at the first coordinate; use a new state directory or an explicit reset procedure approved by the operator.

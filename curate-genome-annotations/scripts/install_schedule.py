@@ -70,6 +70,10 @@ def wrapper_script(args: argparse.Namespace) -> str:
         "--metrics-output",
         '"$METRICS"',
     ]
+    if args.selection_policy == "random":
+        # The wrapper's RUN_ID is per-day and stable, so a same-day rerun
+        # resumes the same batch and the next day samples a fresh one.
+        run_command += ["--random-seed", '"$RUN_ID"']
     if args.research_refresh_days:
         run_command += ["--research-refresh-days", str(args.research_refresh_days)]
     if args.full_text_policy != "prefer":
@@ -205,7 +209,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--scheduler", choices=("launchd", "systemd", "cron"), default=None)
     parser.add_argument("--schedule-label", type=label, default="genome-annotation-daily")
-    parser.add_argument("--selection-policy", choices=("low-quality", "coordinate"), default="low-quality")
+    parser.add_argument(
+        "--selection-policy", choices=("low-quality", "coordinate", "random"), default="low-quality"
+    )
     parser.add_argument("--maximum-quality-score", type=float, default=70)
     parser.add_argument("--research-refresh-days", type=int, default=365)
     parser.add_argument("--full-text-policy", choices=("prefer", "require", "abstract-allowed"), default="prefer")
