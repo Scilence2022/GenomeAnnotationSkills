@@ -51,12 +51,18 @@ curate-genome-annotations/
 │   ├── bootstrap_repositories.py    # Clone and install CodeXomics and DGR
 │   ├── start_services.py            # Reuse, check, or start both MCP services
 │   ├── run_annotation_workflow.py   # Single, list, and quality-ranked daily workflows
+│   ├── generate_run_report.py       # Comprehensive token/cost/runtime/evidence run report
+│   ├── install_schedule.py          # launchd, systemd, or cron daily schedule generator
+│   ├── run_metrics.py               # Token, cost, runtime, and reference accounting
+│   ├── dgr_telemetry.py             # Read-only DGR accounting lookup
 │   └── mcp_http.py                  # Dependency-free MCP HTTP client
 └── references/
     ├── setup.md
     ├── configuration.md
     ├── workflows.md
     ├── automation.md
+    ├── reporting.md
+    ├── pricing.template.json
     └── troubleshooting.md
 ```
 
@@ -78,7 +84,14 @@ git clone https://github.com/Scilence2022/GenomeAnnotationSkills.git
 cd GenomeAnnotationSkills
 ```
 
-Agents with compatible skill discovery can install or link the `curate-genome-annotations` directory into their local skills directory. The scripts can also be used directly without native skill discovery.
+Link the skill directory into the agent's skills path so it is discovered by name:
+
+```bash
+ln -s "$PWD/curate-genome-annotations" "${CODEX_HOME:-$HOME/.codex}/skills/curate-genome-annotations"   # Codex
+ln -s "$PWD/curate-genome-annotations" "$HOME/.claude/skills/curate-genome-annotations"                 # Claude Code
+```
+
+A symlink keeps the installed skill in step with `git pull`. The scripts can also be run directly, without native skill discovery.
 
 ### 2. Download or reuse CodeXomics and DGR
 
@@ -194,7 +207,31 @@ python3 curate-genome-annotations/scripts/run_annotation_workflow.py \
 
 Daily selection is deterministic and resumable. By default it ranks the lowest-quality supported features first and asks CodeXomics to exclude targets with active or durably archived completed DGR research, independent of the agent's local state directory. It also excludes targets with an active, approved, or committed ChangeSet. Use `--research-refresh-days N` for periodic refresh, `--include-researched` for an intentional repeat campaign, or `--selection-policy coordinate` for coordinate-order coverage.
 
-Scheduling should be handled by the agent platform's recurring automation system or a supervised scheduler. Read [`references/automation.md`](curate-genome-annotations/references/automation.md) before creating a schedule.
+Scheduling should be handled by the agent platform's recurring automation system or a supervised scheduler. `scripts/install_schedule.py` generates a launchd, systemd, or cron schedule that runs the batch and then its report; it prints everything and writes nothing unless `--install` is passed. Read [`references/automation.md`](curate-genome-annotations/references/automation.md) before creating a schedule.
+
+## Run statistics and cost
+
+A batch accounts for what it consumed and what it produced. Two different models bill for one annotated gene — the research model DGR runs internally and the agent model driving the skill — so they are counted in separate ledgers and reported on separate rows, never summed into one number.
+
+```bash
+python3 curate-genome-annotations/scripts/run_annotation_workflow.py \
+  --genome /absolute/path/genome.gbk \
+  --daily-count 10 \
+  --run-id daily-2026-08-20 \
+  --pricing-file /protected/path/pricing.json \
+  --agent-usage-file /durable/path/agent-usage.jsonl \
+  --output /reports/2026-08-20-summary.json \
+  --metrics-output /reports/2026-08-20-metrics.json
+
+python3 curate-genome-annotations/scripts/generate_run_report.py \
+  /reports/2026-08-20-summary.json \
+  --markdown-output /reports/2026-08-20-report.md \
+  --json-output /reports/2026-08-20-report.json
+```
+
+The report covers tokens per model, actual cost, runtime per gene and in total, references surveyed and newly added, full texts adopted, and newly incorporated information.
+
+Every number comes from something a service reported. Nothing is estimated from character counts or elapsed time, and a statistic no service reported is shown as `unavailable` with its reason rather than as zero — including cost when no price list is configured, and agent-model tokens when the agent did not write its usage sidecar. Read [`references/reporting.md`](curate-genome-annotations/references/reporting.md) for where each statistic originates and what to do about each gap.
 
 ## Human review
 
@@ -217,7 +254,9 @@ The curator then opens **Annotation Review Center** in CodeXomics to inspect cit
 - [Authentication, models, search, and durability](curate-genome-annotations/references/configuration.md)
 - [External MCP and internal ChatBox workflows](curate-genome-annotations/references/workflows.md)
 - [Recurring automation](curate-genome-annotations/references/automation.md)
+- [Run statistics and reporting](curate-genome-annotations/references/reporting.md)
 - [Troubleshooting](curate-genome-annotations/references/troubleshooting.md)
+- [Upstream changes for CodeXomics and DGR](integration/README.md)
 
 ## Validation
 

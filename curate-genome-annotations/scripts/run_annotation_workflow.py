@@ -18,7 +18,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from mcp_http import McpError, McpHttpClient, require_tools
+from dgr_telemetry import DgrTelemetryClient
+from mcp_http import McpError, McpHttpClient
+from run_metrics import (
+    METRICS_SCHEMA,
+    ROLE_AGENT,
+    PricingBook,
+    UsageLedger,
+    changeset_delta,
+    duration_seconds,
+    literature_statistics,
+    normalize_dgr_llm_usage,
+    note_delta,
+    read_agent_usage,
+)
 
 
 REQUIRED_TOOLS = {
@@ -26,11 +39,17 @@ REQUIRED_TOOLS = {
     "get_annotation_research_workflow",
     "list_annotation_quality_candidates",
     "list_annotation_changesets",
-    "list_annotation_research_history",
     "list_genome_windows",
     "load_genome_file",
     "resolve_annotation_target",
     "start_annotation_research",
+}
+# Reporting-only tools. A CodeXomics build without them still curates
+# correctly; the run report records the resulting statistic as unavailable
+# instead of failing the batch.
+OPTIONAL_TOOLS = {
+    "get_annotation_changeset",
+    "list_annotation_research_history",
 }
 TERMINAL_STATUSES = {"completed", "failed", "cancelled", "canceled"}
 DAILY_COVERED_STATUSES = {"completed", "skipped"}
@@ -462,6 +481,12 @@ def compact_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
         "llmSynthesis": workflow.get("llmSynthesis"),
         "researchCoverage": workflow.get("researchCoverage"),
         "annotationNote": workflow.get("annotationNote"),
+        # Accounting fields. Newer CodeXomics builds persist DGR's reported
+        # token usage and elapsed research time on the workflow record; older
+        # builds omit them and the runner falls back to a read-only DGR lookup.
+        "llmUsage": workflow.get("llmUsage"),
+        "researchTimeMs": workflow.get("researchTimeMs") or workflow.get("researchTime"),
+        "cacheReplay": workflow.get("cacheReplay"),
     }
 
 
@@ -488,6 +513,88 @@ def poll_workflow(
         interval = min(max_interval, interval * 1.35)
     compact = compact_workflow(last_workflow)
     raise TimeoutError(f"Research workflow {task_id} did not finish within {timeout:g}s; last state: {compact}")
+
+
+def changeset_review_preview(
+    client: McpHttpClient, route: dict[str, str], change_set_id: str
+) -> list[dict[str, Any]]:
+    """CodeXomics' own before/after diff for one ChangeSet, or an empty list."""
+    payload = client.call_tool(
+        "list_annotation_changesets", {**route, "query": change_set_id, "limit": 20, "offset": 0}
+    )
+    if not isinstance(payload, dict) or not isinstance(payload.get("changeSets"), list):
+        return []
+    for item in payload["changeSets"]:
+        if isinstance(item, dict) and str(item.get("id") or "") == change_set_id:
+            preview = item.get("preview")
+            return preview if isinstance(preview, list) else []
+    return []
+
+
+def annotation_delta(
+    client: McpHttpClient,
+    route: dict[str, str],
+    change_set_id: str,
+    available_tools: set[str],
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Newly added references and newly incorporated fields for one ChangeSet.
+
+    The proposal is compared against the annotation CodeXomics currently holds,
+    so a citation the record already carried is not counted as newly added.
+    """
+    if "get_annotation_changeset" not in available_tools:
+        return None, "CodeXomics does not expose get_annotation_changeset; annotation deltas are unavailable"
+    try:
+        payload = client.call_tool("get_annotation_changeset", {**route, "changeSetId": change_set_id})
+    except McpError as exc:
+        return None, f"Cannot read ChangeSet {change_set_id}: {exc}"
+    changeset = payload.get("changeSet") if isinstance(payload, dict) else None
+    if not isinstance(changeset, dict):
+        return None, f"CodeXomics returned an invalid ChangeSet record for {change_set_id}"
+    try:
+        preview = changeset_review_preview(client, route, change_set_id)
+    except McpError:
+        # The delta is still meaningful without the diff; every proposed
+        # reference is then reported as proposed rather than confirmed new.
+        preview = []
+    return changeset_delta(changeset, preview), None
+
+
+def gene_usage_entries(
+    result: dict[str, Any],
+    telemetry: dict[str, Any] | None,
+    workflow_usage: Any,
+    *,
+    gene: str,
+    thinking_model: str | None,
+    task_model: str | None,
+) -> tuple[list[Any], list[str]]:
+    """Ledger entries for one gene's DGR research, from whichever source has them."""
+    usage_payload = workflow_usage
+    source = "codexomics-workflow"
+    if not isinstance(usage_payload, dict) or not usage_payload:
+        usage_payload = telemetry.get("llmUsage") if isinstance(telemetry, dict) else None
+        source = "dgr-telemetry"
+    if not isinstance(usage_payload, dict) or not usage_payload:
+        return [], [
+            f"{gene}: no LLM token usage was reported by CodeXomics or DGR; "
+            "research-model token totals are unavailable for this gene"
+        ]
+    cache_replay = bool((telemetry or {}).get("cacheReplay") or result.get("cacheReplay"))
+    entries, warnings = normalize_dgr_llm_usage(
+        usage_payload,
+        thinking_model=thinking_model,
+        task_model=task_model,
+        gene=gene,
+        billable=not cache_replay,
+    )
+    result["tokenUsageSource"] = source
+    if cache_replay:
+        warnings.append(
+            f"{gene}: DGR served a cached result; its reported tokens are replayed from the original "
+            "run and are excluded from billed cost"
+        )
+    return entries, [f"{gene}: {item}" if not item.startswith(f"{gene}:") else item for item in warnings]
 
 
 def load_state(path: Path, genome_path: Path, genome_key: str) -> dict[str, Any]:
@@ -550,6 +657,117 @@ def persist_failed_workflow(
         }
     )
     save_state(path, state)
+
+
+def sum_reported(values: list[Any]) -> dict[str, Any]:
+    """Sum only the values a service actually reported.
+
+    A missing value is counted as unreported rather than as zero, so a report
+    can distinguish "no references were surveyed" from "nobody told us".
+    """
+    reported = [float(value) for value in values if isinstance(value, (int, float)) and not isinstance(value, bool)]
+    total = sum(reported)
+    return {
+        "total": int(total) if total.is_integer() else round(total, 3),
+        "reportedFor": len(reported),
+        "unreportedFor": len(values) - len(reported),
+    }
+
+
+def build_metrics(
+    summary: dict[str, Any],
+    ledger: UsageLedger,
+    warnings: list[str],
+    *,
+    agent_usage_file: Path | None,
+) -> dict[str, Any]:
+    """Aggregate the per-gene records into the daily batch statistics."""
+    results = [item for item in summary.get("results", []) if isinstance(item, dict)]
+    completed = [item for item in results if normalized(item.get("status")) == "completed"]
+
+    per_gene: list[dict[str, Any]] = []
+    for item in results:
+        delta = item.get("annotationDelta") if isinstance(item.get("annotationDelta"), dict) else {}
+        references = item.get("references") if isinstance(item.get("references"), dict) else {}
+        note = item.get("annotationNote") if isinstance(item.get("annotationNote"), dict) else {}
+        gene_ledger = ledger.filtered(gene=str(item.get("requestedIdentifier") or ""))
+        per_gene.append(
+            {
+                "gene": item.get("requestedIdentifier"),
+                "locusTag": (item.get("resolvedTarget") or {}).get("locusTag"),
+                "status": item.get("status"),
+                "curationOutcome": item.get("curationOutcome"),
+                "taskId": item.get("taskId"),
+                "changeSetId": item.get("changeSetId"),
+                "durationSeconds": item.get("durationSeconds"),
+                "researchSeconds": item.get("researchSeconds"),
+                "cacheReplay": item.get("cacheReplay"),
+                "tokenUsageSource": item.get("tokenUsageSource"),
+                "tokens": None if gene_ledger.empty else gene_ledger.to_dict()["totals"],
+                "cost": None if gene_ledger.empty else gene_ledger.to_dict()["cost"]["total"],
+                "referencesSurveyed": references.get("surveyedRecords"),
+                "referencesRetained": references.get("retainedReferences"),
+                "fullTextSources": references.get("fullTextSources"),
+                "fullTextFindings": references.get("fullTextFindings"),
+                "newReferenceCount": delta.get("newReferenceCount"),
+                "updatedFieldCount": delta.get("updatedFieldCount"),
+                "noteMutationReady": note.get("mutationReady"),
+                "noteIncludedFactCount": note.get("includedFactCount"),
+            }
+        )
+
+    durations = [item.get("durationSeconds") for item in results]
+    research_seconds = [item.get("researchSeconds") for item in results]
+    measured = sorted(value for value in durations if isinstance(value, (int, float)))
+    field_counts: dict[str, int] = {}
+    for item in completed:
+        delta = item.get("annotationDelta") if isinstance(item.get("annotationDelta"), dict) else {}
+        for entry in delta.get("updatedFields") or []:
+            if isinstance(entry, dict) and entry.get("field"):
+                field_counts[str(entry["field"])] = field_counts.get(str(entry["field"]), 0) + 1
+
+    tokens = ledger.to_dict()
+    if not any(entry.role == ROLE_AGENT for entry in ledger.entries):
+        warnings.append(
+            "No agent-side token usage was recorded"
+            + (f" in {agent_usage_file}" if agent_usage_file else "")
+            + "; the orchestrating model's tokens and cost are unavailable. Only the agent can report "
+            "them — append records to the usage sidecar (see references/reporting.md)."
+        )
+
+    return {
+        "schema": METRICS_SCHEMA,
+        "runId": summary.get("runId"),
+        "generatedAt": utc_now(),
+        "genome": summary.get("genomePath"),
+        "runtime": {
+            "runSeconds": duration_seconds(summary.get("startedAt"), summary.get("finishedAt")),
+            "genesAttempted": len(results),
+            "genesCompleted": len(completed),
+            "perGeneWallClockSeconds": sum_reported(durations),
+            "dgrResearchSeconds": sum_reported(research_seconds),
+            "medianGeneSeconds": measured[len(measured) // 2] if measured else None,
+            "slowestGeneSeconds": measured[-1] if measured else None,
+            "fastestGeneSeconds": measured[0] if measured else None,
+        },
+        "tokens": tokens,
+        "references": {
+            "surveyed": sum_reported([item.get("referencesSurveyed") for item in per_gene]),
+            "retained": sum_reported([item.get("referencesRetained") for item in per_gene]),
+            "fullTextsAdopted": sum_reported([item.get("fullTextSources") for item in per_gene]),
+            "fullTextFindings": sum_reported([item.get("fullTextFindings") for item in per_gene]),
+            "newlyAdded": sum_reported([item.get("newReferenceCount") for item in per_gene]),
+        },
+        "newInformation": {
+            "changeSetsCreated": sum(1 for item in results if item.get("changeSetId")),
+            "updatedFields": sum_reported([item.get("updatedFieldCount") for item in per_gene]),
+            "fieldsUpdated": dict(sorted(field_counts.items())),
+            "mutationReadyNotes": sum(1 for item in per_gene if item.get("noteMutationReady") is True),
+            "noteIncludedFacts": sum_reported([item.get("noteIncludedFactCount") for item in per_gene]),
+        },
+        "perGene": per_gene,
+        "warnings": sorted(set(warnings)),
+    }
 
 
 def parse_args() -> argparse.Namespace:
@@ -644,6 +862,52 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output", type=Path)
     parser.add_argument("--dry-run", action="store_true", help="Load/inspect the genome but do not start research")
+
+    accounting = parser.add_argument_group(
+        "accounting",
+        "Token, cost, runtime, and evidence statistics for the daily run report",
+    )
+    accounting.add_argument("--run-id", help="Stable identifier shared with the agent usage sidecar and run report")
+    accounting.add_argument(
+        "--metrics-output",
+        type=Path,
+        help="Write the standalone run-metrics JSON here in addition to the run summary",
+    )
+    accounting.add_argument(
+        "--pricing-file",
+        type=Path,
+        help="Model price list (schema genome-annotation-skills.pricing.v1). Without it, tokens are "
+        "reported and cost is marked unavailable rather than estimated.",
+    )
+    accounting.add_argument(
+        "--agent-usage-file",
+        type=Path,
+        default=Path(os.environ["GENOME_ANNOTATION_AGENT_USAGE_FILE"])
+        if os.environ.get("GENOME_ANNOTATION_AGENT_USAGE_FILE")
+        else None,
+        help="JSON Lines sidecar the orchestrating agent appends its own token usage to. Only the agent "
+        "can observe its own spend, so agent-model totals are unavailable without it.",
+    )
+    accounting.add_argument(
+        "--dgr-telemetry",
+        choices=("auto", "require", "off"),
+        default="auto",
+        help="Read token/runtime accounting straight from DGR when CodeXomics does not surface it. "
+        "This is a read-only status lookup for tasks CodeXomics already created (default: auto)",
+    )
+    accounting.add_argument("--dgr-url", default=None, help="DGR MCP endpoint for telemetry reads")
+    accounting.add_argument("--dgr-token", default=None, help="DGR MCP token (prefer DGR_MCP_TOKEN)")
+    accounting.add_argument(
+        "--dgr-thinking-model",
+        default=os.environ.get("MCP_THINKING_MODEL"),
+        help="Model id DGR uses for planning/synthesis phases; needed to attribute tokens when DGR "
+        "does not report model ids (default: $MCP_THINKING_MODEL)",
+    )
+    accounting.add_argument(
+        "--dgr-task-model",
+        default=os.environ.get("MCP_TASK_MODEL"),
+        help="Model id DGR uses for per-source extraction phases (default: $MCP_TASK_MODEL)",
+    )
     return parser.parse_args()
 
 
@@ -682,8 +946,25 @@ def main() -> int:
     token = args.codexomics_token or os.environ.get("CODEXOMICS_MCP_API_KEY") or os.environ.get(
         "CODEXOMICS_MCP_MASTER_KEY"
     )
+    started_at = utc_now()
+    run_id = args.run_id or f"gas-run-{digest({'genome': genome_key, 'startedAt': started_at}, 16)}"
+    try:
+        pricing = PricingBook.resolve(args.pricing_file)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    ledger = UsageLedger(pricing)
+    accounting_warnings: list[str] = []
+    if not pricing.models:
+        accounting_warnings.append(
+            "No pricing file configured; token counts are reported but cost is unavailable. "
+            "Pass --pricing-file or set GENOME_ANNOTATION_PRICING_FILE."
+        )
+
     summary: dict[str, Any] = {
-        "startedAt": utc_now(),
+        "schema": METRICS_SCHEMA,
+        "runId": run_id,
+        "startedAt": started_at,
         "genomePath": str(genome_path),
         "selector": "daily-count" if args.daily_count else "explicit",
         "dryRun": args.dry_run,
@@ -696,12 +977,21 @@ def main() -> int:
         "automatedApprovalOrApplication": False,
     }
 
+    telemetry_client: DgrTelemetryClient | None = None
     try:
         with GenomeLock(lock_path), McpHttpClient(args.codexomics_url, token=token, timeout=120.0) as client:
-            missing = require_tools(client, REQUIRED_TOOLS)
+            available_tools = {tool.name for tool in client.list_tools()}
+            missing = sorted(REQUIRED_TOOLS - available_tools)
             if missing:
                 raise RuntimeError(
                     "CodeXomics MCP is missing required tools or permissions: " + ", ".join(missing)
+                )
+            missing_optional = sorted(OPTIONAL_TOOLS - available_tools)
+            if missing_optional:
+                accounting_warnings.append(
+                    "CodeXomics does not expose reporting tools "
+                    + ", ".join(missing_optional)
+                    + "; the affected statistics are reported as unavailable"
                 )
             window_id, expected_genome, genome_info = prepare_genome(
                 client,
@@ -807,6 +1097,8 @@ def main() -> int:
                     validated_candidates.append(candidate_summary)
                 summary["candidates"] = validated_candidates
             else:
+                if args.dgr_telemetry != "off":
+                    telemetry_client = DgrTelemetryClient.from_environment(args.dgr_url, args.dgr_token)
                 intent = {
                     "userPrompt": args.user_prompt,
                     "researchFocus": args.research_focus,
@@ -1000,7 +1292,57 @@ def main() -> int:
                                     result["curationWarning"] = (
                                         "The user PDFs were parsed or screened but none produced exact-target full-text evidence"
                                     )
+
+                                # --- accounting -------------------------------
+                                telemetry: dict[str, Any] | None = None
+                                if telemetry_client is not None and not isinstance(compact.get("llmUsage"), dict):
+                                    telemetry, telemetry_warning = telemetry_client.fetch(str(task_id))
+                                    if telemetry_warning:
+                                        accounting_warnings.append(telemetry_warning)
+                                        if args.dgr_telemetry == "require":
+                                            raise RuntimeError(telemetry_warning)
+                                if isinstance(telemetry, dict):
+                                    result["cacheReplay"] = telemetry.get("cacheReplay")
+                                    if result.get("researchTimeMs") is None:
+                                        result["researchTimeMs"] = telemetry.get("researchTimeMs")
+                                    if not isinstance(literature_coverage, dict) and isinstance(
+                                        telemetry.get("literatureCoverage"), dict
+                                    ):
+                                        result["literatureCoverage"] = telemetry["literatureCoverage"]
+                                    if telemetry.get("searchDiagnostics"):
+                                        result["searchDiagnostics"] = telemetry["searchDiagnostics"]
+                                research_ms = result.get("researchTimeMs")
+                                if isinstance(research_ms, (int, float)) and research_ms >= 0:
+                                    result["researchSeconds"] = round(float(research_ms) / 1000.0, 3)
+                                result["references"] = literature_statistics(
+                                    result.get("literatureCoverage"),
+                                    attachment_summary,
+                                    telemetry,
+                                )
+                                if isinstance(annotation_note, dict):
+                                    result["annotationNote"] = note_delta(annotation_note)
+                                entries, usage_warnings = gene_usage_entries(
+                                    result,
+                                    telemetry,
+                                    compact.get("llmUsage"),
+                                    gene=candidate.identifier,
+                                    thinking_model=args.dgr_thinking_model,
+                                    task_model=args.dgr_task_model,
+                                )
+                                ledger.extend(entries)
+                                accounting_warnings.extend(usage_warnings)
+                                if compact.get("changeSetId"):
+                                    delta, delta_warning = annotation_delta(
+                                        client, route, str(compact["changeSetId"]), available_tools
+                                    )
+                                    if delta is not None:
+                                        result["annotationDelta"] = delta
+                                    if delta_warning:
+                                        accounting_warnings.append(f"{candidate.identifier}: {delta_warning}")
                         result["finishedAt"] = utc_now()
+                        result["durationSeconds"] = duration_seconds(
+                            result.get("startedAt"), result["finishedAt"]
+                        )
                         record = state["workflows"].setdefault(key, {})
                         record.update(
                             {
@@ -1020,6 +1362,9 @@ def main() -> int:
                         save_state(state_path, state)
                     except (McpError, RuntimeError, TimeoutError, ValueError) as exc:
                         result.update({"status": "failed", "error": str(exc), "finishedAt": utc_now()})
+                        result["durationSeconds"] = duration_seconds(
+                            result.get("startedAt"), result["finishedAt"]
+                        )
                         persist_failed_workflow(
                             state_path,
                             state,
@@ -1058,9 +1403,21 @@ def main() -> int:
                 1 for item in summary.get("candidates", []) if item.get("eligible") is False
             ),
         }
+        if not args.dry_run:
+            if args.agent_usage_file:
+                agent_entries, agent_warnings = read_agent_usage(
+                    args.agent_usage_file, run_id=run_id, since=summary["startedAt"]
+                )
+                ledger.extend(agent_entries)
+                accounting_warnings.extend(agent_warnings)
+            summary["metrics"] = build_metrics(
+                summary, ledger, accounting_warnings, agent_usage_file=args.agent_usage_file
+            )
         print(json.dumps(summary, indent=2, ensure_ascii=False))
         if args.output:
             atomic_json_write(args.output.expanduser().resolve(), summary)
+        if args.metrics_output and summary.get("metrics"):
+            atomic_json_write(args.metrics_output.expanduser().resolve(), summary["metrics"])
         if args.dry_run:
             return 1 if summary["counts"]["dryRunIneligible"] else 0
         unsuccessful = sum(
@@ -1073,11 +1430,22 @@ def main() -> int:
         ) else 0
     except (McpError, RuntimeError, OSError, ValueError) as exc:
         summary.update({"finishedAt": utc_now(), "fatalError": str(exc)})
+        accounting_warnings.append(f"Run ended with a fatal error; statistics cover only completed genes: {exc}")
+        with contextlib.suppress(Exception):
+            summary["metrics"] = build_metrics(
+                summary, ledger, accounting_warnings, agent_usage_file=args.agent_usage_file
+            )
         print(json.dumps(summary, indent=2, ensure_ascii=False), file=sys.stderr)
         if args.output:
             with contextlib.suppress(OSError):
                 atomic_json_write(args.output.expanduser().resolve(), summary)
+        if args.metrics_output and summary.get("metrics"):
+            with contextlib.suppress(OSError):
+                atomic_json_write(args.metrics_output.expanduser().resolve(), summary["metrics"])
         return 1
+    finally:
+        if telemetry_client is not None:
+            telemetry_client.close()
 
 
 if __name__ == "__main__":
