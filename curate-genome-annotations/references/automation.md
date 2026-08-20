@@ -13,16 +13,40 @@ Before creating a recurring job, obtain:
 - state directory and operational owner;
 - notification or review handoff destination.
 
+Also obtain the reporting inputs, because a daily batch is expected to account for what it consumed:
+
+- price list path for the research and agent models;
+- agent usage sidecar path;
+- report output directory and retention policy.
+
 The recurring job must create ChangeSets only. Human review remains a separate activity.
 
 ## Scheduling model
 
 Use the agent product's native recurring automation mechanism when available. Otherwise use a supervised scheduler such as launchd, systemd timer, or cron. Keep secrets in the scheduler's protected environment, not in the command line.
 
-The scheduled command should be equivalent to:
+`scripts/install_schedule.py` generates the wrapper and the scheduler unit. It prints them and writes nothing unless `--install` is passed:
 
 ```bash
-python3 /absolute/path/curate-genome-annotations/scripts/run_annotation_workflow.py \
+python3 /absolute/path/curate-genome-annotations/scripts/install_schedule.py \
+  --genome /absolute/path/genome.gbk \
+  --daily-count 10 \
+  --at 01:00 \
+  --state-dir /durable/private/path/genome-annotation-state \
+  --report-dir /durable/private/path/reports \
+  --env-file /protected/path/genome-annotation.env \
+  --pricing-file /protected/path/pricing.json \
+  --agent-usage-file /durable/private/path/agent-usage.jsonl
+```
+
+launchd fires at the machine's local time and ignores a requested timezone; use `--scheduler cron` (which emits `CRON_TZ`) or `--scheduler systemd` (which emits `Timezone=`) when the daily time must follow a specific zone.
+
+The generated wrapper is equivalent to:
+
+```bash
+python3 .../start_services.py --check-only
+
+python3 .../run_annotation_workflow.py \
   --genome /absolute/path/genome.gbk \
   --daily-count 10 \
   --selection-policy low-quality \
@@ -30,10 +54,16 @@ python3 /absolute/path/curate-genome-annotations/scripts/run_annotation_workflow
   --research-refresh-days 365 \
   --user-prompt "Refine gene annotations using organism-specific evidence and precise citations" \
   --state-dir /durable/private/path/genome-annotation-state \
-  --output /durable/private/path/latest-run.json
+  --run-id "$RUN_ID" \
+  --pricing-file /protected/path/pricing.json \
+  --agent-usage-file /durable/private/path/agent-usage.jsonl \
+  --output "$SUMMARY" --metrics-output "$METRICS"
+
+python3 .../generate_run_report.py "$SUMMARY" \
+  --markdown-output "$REPORT_MD" --json-output "$REPORT_JSON"
 ```
 
-Run `start_services.py --check-only` first in a wrapper or service health check. Prefer process supervision for CodeXomics and DGR rather than launching duplicate copies from every scheduled job.
+The report step runs even when the batch exits non-zero, so a partial day is still accounted for; the wrapper then exits with the batch's status. Prefer process supervision for CodeXomics and DGR rather than launching duplicate copies from every scheduled job.
 
 ## Overlap and retries
 
@@ -48,15 +78,21 @@ Run `start_services.py --check-only` first in a wrapper or service health check.
 
 ## Daily reporting
 
-Capture the runner's JSON output and report:
+`generate_run_report.py` turns the run summary into the daily report. Read [reporting.md](reporting.md) for where each statistic comes from. The report covers:
 
 - selected/submitted/completed/failed/skipped counts;
 - target, DGR task ID, report attachment, and ChangeSet ID per gene;
-- remaining pending tasks;
-- endpoint or provider failures;
+- total tokens split by role (research model versus agent model) and by model id, plus cached and cache-replayed tokens;
+- actual cost per model from the operator's price list, or an explicit unavailable reason;
+- runtime per gene and for the batch, with DGR research time separated from wall clock;
+- references surveyed, retained, and newly added; full texts adopted;
+- newly incorporated information: qualifier fields updated and citation-bound facts included in Notes;
+- remaining pending tasks and endpoint or provider failures;
 - confirmation that no automatic approval/application occurred.
 
-Alert when the service is unavailable, a run produces no ChangeSet for multiple consecutive targets, DGR tasks complete implausibly without evidence, the task ledger is locked/corrupt, or the same feature remains selected repeatedly.
+Add `--fail-on-gaps` when the monitored job should alert on missing statistics rather than publishing a report with unavailable cells.
+
+Alert when the service is unavailable, a run produces no ChangeSet for multiple consecutive targets, DGR tasks complete implausibly without evidence, the task ledger is locked/corrupt, the same feature remains selected repeatedly, or the replayed-token share rises — the last means the batch is re-covering already-researched targets.
 
 ## Changing policy
 

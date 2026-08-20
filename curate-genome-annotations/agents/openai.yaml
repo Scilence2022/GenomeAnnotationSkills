@@ -1,4 +1,4 @@
 interface:
   display_name: "Genome Annotation Curator"
-  short_description: "Run safe CodeXomics and DGR annotation workflows"
-  default_prompt: "Use $curate-genome-annotations to load a genome, prioritize low-quality coding or non-coding gene annotations without repeating covered targets, and create evidence-backed ChangeSets for human review."
+  short_description: "Run safe CodeXomics and DGR annotation workflows with token, cost, and evidence reporting"
+  default_prompt: "Use $curate-genome-annotations to load a genome, prioritize low-quality coding or non-coding gene annotations without repeating covered targets, create evidence-backed ChangeSets for human review, and report the batch's tokens, cost, runtime, references, and newly incorporated information."

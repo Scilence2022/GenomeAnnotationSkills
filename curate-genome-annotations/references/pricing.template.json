@@ -1,0 +1,29 @@
+{
+  "schema": "genome-annotation-skills.pricing.v1",
+  "_readme": [
+    "Copy this file outside the repository, fill in the prices your provider actually charges you,",
+    "and pass it with --pricing-file or GENOME_ANNOTATION_PRICING_FILE.",
+    "Prices are per MILLION tokens in the stated currency.",
+    "The nulls below are deliberate: an unfilled file fails loudly at startup instead of",
+    "producing a confident cost of zero. Take the numbers from your provider's own price page",
+    "or invoice, and set effectiveDate to the day you copied them.",
+    "cachedInputPerMillion is optional. Set it when the provider discounts prompt-cache hits",
+    "(DeepSeek does); omit it and cached input is billed at the full input rate."
+  ],
+  "currency": "USD",
+  "effectiveDate": null,
+  "models": {
+    "deepseek-v4-pro": {
+      "note": "Model DGR runs for query planning, literature learning, and report synthesis (MCP_THINKING_MODEL / MCP_TASK_MODEL).",
+      "inputPerMillion": null,
+      "cachedInputPerMillion": null,
+      "outputPerMillion": null
+    },
+    "deepseek-v4-flash": {
+      "note": "Model the orchestrating agent runs. Its usage arrives through the agent usage sidecar.",
+      "inputPerMillion": null,
+      "cachedInputPerMillion": null,
+      "outputPerMillion": null
+    }
+  }
+}

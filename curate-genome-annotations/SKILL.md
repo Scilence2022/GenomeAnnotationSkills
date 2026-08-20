@@ -1,6 +1,6 @@
 ---
 name: curate-genome-annotations
-description: Load a GenBank, EMBL, or FASTA genome into CodeXomics and use Deep Gene Research (DGR) plus optional user-supplied PDF full text to produce evidence-backed, human-reviewable annotation ChangeSets for exact coding and non-coding gene annotation features. Use when asked to refine one named gene from web literature or PDFs; process a gene list; prioritize low-quality annotations; select a fixed daily batch; resume a run; prepare a recurring annotation job; or install, configure, start, or connect CodeXomics and DGR. Supports external MCP agents and the internal CodeXomics ChatBox. Never use it to silently approve or apply annotation changes.
+description: Load a GenBank, EMBL, or FASTA genome into CodeXomics and use Deep Gene Research (DGR) plus optional user-supplied PDF full text to produce evidence-backed, human-reviewable annotation ChangeSets for exact coding and non-coding gene annotation features. Use when asked to refine one named gene from web literature or PDFs; process a gene list; prioritize low-quality annotations; select a fixed daily batch; resume a run; prepare a recurring annotation job; report a batch's token consumption, per-model cost, runtime, references surveyed or newly added, full texts adopted, and newly incorporated information; or install, configure, start, or connect CodeXomics and DGR. Supports external MCP agents and the internal CodeXomics ChatBox. Never use it to silently approve or apply annotation changes.
 ---
 
 # Curate Genome Annotations
@@ -17,6 +17,7 @@ Use CodeXomics as the genome authority and ChangeSet boundary. Use DGR as the ev
 6. Never give an unattended worker a curator credential. Use a research key limited to `annotation:read`, `annotation:research`, and `annotation:propose`.
 7. Report partial failures per gene. Do not claim an annotation was updated when only a proposal was created.
 8. Treat a PDF as full text only when DGR parses its pages and CodeXomics verifies exact text spans, offsets, and hashes in the archived report. Do not relabel an abstract, snippet, OCR failure, or inaccessible document as full text.
+9. Report only statistics a service actually reported. Never estimate tokens, cost, or runtime from message length, gene count, or elapsed time, and never present a missing measurement as zero. An unreported statistic is `unavailable` with its reason.
 
 ## Choose the execution path
 
@@ -64,16 +65,50 @@ The runner supports exactly one selector per invocation:
 
 Run with `--dry-run` before a new batch policy. The runner never approves or applies ChangeSets.
 
+## Report the run
+
+Read [references/reporting.md](references/reporting.md) before promising any statistic.
+
+Two different models bill for one annotated gene: the **research** model DGR runs internally, and the **agent** model driving this skill. They are usually different models at different prices, so they are counted in separate ledgers and never summed into one number.
+
+1. Give the batch a stable `--run-id` and write both artifacts:
+
+   ```bash
+   python3 scripts/run_annotation_workflow.py --genome /absolute/genome.gbk --daily-count 10 \
+     --run-id daily-2026-08-20 \
+     --pricing-file /protected/path/pricing.json \
+     --agent-usage-file /protected/path/agent-usage.jsonl \
+     --dgr-thinking-model "$MCP_THINKING_MODEL" --dgr-task-model "$MCP_TASK_MODEL" \
+     --output /reports/2026-08-20-summary.json --metrics-output /reports/2026-08-20-metrics.json
+   ```
+
+2. **Record your own token usage.** Nothing in CodeXomics or DGR can observe the orchestrating agent's spend. Append one JSON Lines record per gene to the `--agent-usage-file` with the same `runId`, your model id, and the prompt/completion tokens your runtime reports. If your runtime does not expose usage, say so; do not estimate it.
+3. Research-model tokens come from DGR's provider-reported `llmUsage`. The runner reads it from the CodeXomics workflow record, and falls back to a **read-only** DGR task-status lookup when that build does not surface it. This fallback never starts, cancels, or mutates research.
+4. Cost needs a price list. Copy `references/pricing.template.json`, fill in what the provider actually charges, and pass `--pricing-file`. Without it, tokens are reported and cost is `unavailable` — never zero.
+5. Generate the report:
+
+   ```bash
+   python3 scripts/generate_run_report.py /reports/2026-08-20-summary.json \
+     --markdown-output /reports/2026-08-20-report.md --json-output /reports/2026-08-20-report.json
+   ```
+
+6. Read the report's data-gaps section back to the user. A missing statistic is a finding, not something to quietly omit.
+
+DGR serves repeat requests from a semantic cache and replays the original run's token counts. Those are reported as `replayedTotalTokens` and excluded from cost.
+
 ## Recurring daily jobs
 
 Read [references/automation.md](references/automation.md) before creating a schedule. Ask for the daily time, timezone, genome path, count, selection policy, and research prompt if the user has not supplied them. Do not install or modify a schedule without explicit authorization.
+
+`scripts/install_schedule.py` prints a wrapper script and a launchd/systemd/cron unit that runs the batch and then the run report. It writes and activates nothing unless `--install` is passed, and keeps credentials in an environment file rather than on the command line.
 
 Keep scheduling separate from curation logic: the scheduler invokes `run_annotation_workflow.py --daily-count N`; CodeXomics owns research coverage in its genome sidecar, while the runner state remains a local execution checkpoint. The runner also uses a per-genome lock and a start-time repeat guard. Prefer sequential DGR submissions unless capacity was explicitly validated.
 
 ## Configuration and recovery
 
 - Read [references/configuration.md](references/configuration.md) when setting credentials, provider models, SearXNG, task storage, or scoped permissions.
-- Read [references/troubleshooting.md](references/troubleshooting.md) when an endpoint is unavailable, DGR finishes implausibly fast, a task stalls, a target is ambiguous, or a ChangeSet is not created.
+- Read [references/reporting.md](references/reporting.md) when setting up token, cost, runtime, or evidence statistics.
+- Read [references/troubleshooting.md](references/troubleshooting.md) when an endpoint is unavailable, DGR finishes implausibly fast, a task stalls, a target is ambiguous, a ChangeSet is not created, or a run statistic is unavailable.
 - Preserve DGR's task ledger and the CodeXomics sidecar. Do not delete either to “unstick” a run.
 - Treat `completed` research with `changeSetStatus: validation_failed` as a recoverable proposal-processing failure. Preserve the task ID and rerun the same explicit target after correcting the validator or configuration.
 
@@ -90,5 +125,15 @@ Return a concise run summary containing:
 - Genome Annotation Note summary: whether the report carries a mutation-ready citation-bound `/note` text or only an informational summary, and its included/cited fact counts when available;
 - failures or skipped reasons;
 - explicit statement that no ChangeSet was approved or applied automatically.
+
+For a batch run, also return the statistics block:
+
+- total tokens across every step, split by role (research model versus agent model) and by model id, with cached-input and cache-replayed tokens shown separately;
+- actual cost per model and in total, in the price list's currency, or `unavailable` with the reason;
+- runtime per gene and for the batch, separating DGR research time from wall clock;
+- references surveyed, references retained, and references newly added to annotations;
+- full texts adopted as verified evidence, and the evidence spans bound to facts;
+- newly incorporated information: qualifier fields updated per gene and citation-bound facts included in Notes;
+- every data gap, naming the statistic and why it is unavailable.
 
 If the user requests the full DGR report or proposal, return the stored artifact or structured result without truncating it silently. For large JSON, point to the CodeXomics attachment/JSON viewer and optionally save an explicit output file requested by the user.

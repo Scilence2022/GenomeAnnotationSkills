@@ -69,6 +69,21 @@ Optionally set `NCBI_API_KEY` for higher NCBI/PubTator rate limits. DGR's full-t
 
 Comprehensive literature analysis is the default. The runner passes `literatureBudget` (10..2000, default 300) and `fullTextBudget` (1..100, default 25) through `start_annotation_research` to DGR, and `--max-result` (1..100) caps results per query. DGR pages the complete PubMed match set up to the literature budget and records a `literatureCoverage` audit (budget, total matches, retained abstracts, Gene-linked bibliography completeness) in the archived workflow; the runner surfaces it per gene. These knobs require a matching DGR version — older DGR builds reject budgets and `--max-result` above 20.
 
+## Run accounting
+
+Cost reporting needs the model list prices and the orchestrating agent's own token usage. Neither is discoverable from CodeXomics or DGR. See [reporting.md](reporting.md) for the full contract.
+
+```bash
+export GENOME_ANNOTATION_PRICING_FILE=/protected/path/pricing.json
+export GENOME_ANNOTATION_AGENT_USAGE_FILE=/durable/private/path/agent-usage.jsonl
+```
+
+Copy `references/pricing.template.json` outside the repository and fill in the prices your provider actually charges. The template ships with `null` prices so an unfilled file fails at startup instead of reporting a confident cost of zero.
+
+Token attribution also needs DGR's model ids. `MCP_THINKING_MODEL` and `MCP_TASK_MODEL` are used automatically when exported into the runner's process; otherwise pass `--dgr-thinking-model` and `--dgr-task-model`. A scheduled job frequently has a narrower environment than an interactive shell — export them in the job's environment file.
+
+`DGR_MCP_URL` and `DGR_MCP_TOKEN` enable the runner's read-only DGR telemetry fallback, used only when the CodeXomics workflow record carries no `llmUsage`. It re-reads tasks CodeXomics already created and never starts, cancels, or mutates research.
+
 ## MCP client variables
 
 The bundled scripts recognize:
@@ -79,6 +94,8 @@ export CODEXOMICS_MCP_API_KEY=<research-agent-key>
 export DGR_MCP_URL=http://127.0.0.1:3000/api/mcp
 export DGR_MCP_TOKEN=<ACCESS_PASSWORD>
 export GENOME_ANNOTATION_STATE_DIR=$HOME/.local/state/genome-annotation-skills
+export GENOME_ANNOTATION_PRICING_FILE=/protected/path/pricing.json
+export GENOME_ANNOTATION_AGENT_USAGE_FILE=/durable/private/path/agent-usage.jsonl
 ```
 
 Command-line token options override environment variables but are discouraged on shared systems because process listings and shell history may expose them.
