@@ -60,6 +60,15 @@ Preserve user order, trim whitespace, and remove exact duplicate identifiers cas
 
 The default `low-quality` policy prioritizes missing or generic products, missing functional Notes and cross-references, identity gaps, and CDS translation defects. Quality scoring is triage rather than a biological truth claim. Use `--selection-policy coordinate` for reproducible coverage independent of quality.
 
+Use `--selection-policy random` when the batch should be an unbiased sample rather than a worklist — for benchmarking annotation quality across a genome, or for spreading curation over regions the quality score would never reach. It applies after every coverage exclusion, so it samples only genes that are actually curatable, and it stays inside `--maximum-quality-score` (pass 100 to sample the whole genome).
+
+Random selection is reproducible, not merely repeatable. Each candidate is ranked by a hash of the seed and its identifier rather than by shuffling the list, which has two consequences worth relying on:
+
+- a rerun with the same seed picks the same genes, so an interrupted batch resumes instead of abandoning the targets it already submitted to DGR;
+- when covered genes drop out of the pool, the survivors keep their relative order, so the next batch continues where the last one stopped instead of resampling from scratch.
+
+The seed resolves from `--random-seed`, then an explicit `--run-id`, then the genome plus the UTC date. Only the last of those changes on its own, and the runner records a data-gap warning when it is used. The resolved seed and its source appear in `selection.randomSeed` and `selection.randomSeedSource`.
+
 ## Proposal quality
 
 The annotation proposal should be concise but information-rich:

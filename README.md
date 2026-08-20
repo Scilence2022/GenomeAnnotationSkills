@@ -205,7 +205,17 @@ python3 curate-genome-annotations/scripts/run_annotation_workflow.py \
   --output /absolute/path/latest-annotation-run.json
 ```
 
-Daily selection is deterministic and resumable. By default it ranks the lowest-quality supported features first and asks CodeXomics to exclude targets with active or durably archived completed DGR research, independent of the agent's local state directory. It also excludes targets with an active, approved, or committed ChangeSet. Use `--research-refresh-days N` for periodic refresh, `--include-researched` for an intentional repeat campaign, or `--selection-policy coordinate` for coordinate-order coverage.
+Daily selection is deterministic and resumable. By default it ranks the lowest-quality supported features first and asks CodeXomics to exclude targets with active or durably archived completed DGR research, independent of the agent's local state directory. It also excludes targets with an active, approved, or committed ChangeSet. Use `--research-refresh-days N` for periodic refresh or `--include-researched` for an intentional repeat campaign.
+
+Three ranking policies decide which eligible genes a batch takes:
+
+| `--selection-policy` | Picks | Quality threshold |
+| --- | --- | --- |
+| `low-quality` (default) | Worst-annotated features first | Honours `--maximum-quality-score` |
+| `coordinate` | Coordinate order, for reproducible full coverage | Ignored |
+| `random` | An unbiased sample of the eligible pool | Honours `--maximum-quality-score`; pass 100 to sample the whole genome |
+
+All three apply *after* every coverage exclusion, so no policy can re-select an already-researched gene. `random` is seeded and reproducible — same seed, same genes — so an interrupted batch resumes rather than paying for a fresh sample. Seed it with `--random-seed` or a stable `--run-id`.
 
 Scheduling should be handled by the agent platform's recurring automation system or a supervised scheduler. `scripts/install_schedule.py` generates a launchd, systemd, or cron schedule that runs the batch and then its report; it prints everything and writes nothing unless `--install` is passed. Read [`references/automation.md`](curate-genome-annotations/references/automation.md) before creating a schedule.
 
