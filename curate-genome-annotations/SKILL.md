@@ -21,7 +21,14 @@ Use CodeXomics as the genome authority and ChangeSet boundary. Use DGR as the ev
 
 ## Choose the execution path
 
-- For an external agent such as Codex, Claude, or OpenClaw, use the scripts in `scripts/` or equivalent MCP calls against CodeXomics tools mode.
+The scripts are client-agnostic: they are plain Python programs that call the
+CodeXomics and DGR MCP endpoints over HTTP, so they run unchanged under Codex,
+Claude Code, TRAE Work, and WorkBuddy/CodeBuddy. For each client's install
+location and optional frontmatter, read [references/clients.md](references/clients.md).
+
+- For an external agent (Codex, Claude Code, TRAE Work, WorkBuddy/CodeBuddy,
+  OpenClaw, or similar), use the scripts in `scripts/` or equivalent MCP calls
+  against CodeXomics tools mode.
 - For CodeXomics ChatBox, load the genome in the app, confirm DGR connectivity, and give the ChatBox an exact gene-associated target or gene list. Instruct it to stop after creating ChangeSets.
 - If repositories or services are missing, read [references/setup.md](references/setup.md), then run `scripts/bootstrap_repositories.py` and `scripts/start_services.py`.
 - If repositories and endpoints already exist, skip installation and startup. Validate endpoints with `scripts/start_services.py --check-only`.
