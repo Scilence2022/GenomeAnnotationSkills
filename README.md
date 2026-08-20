@@ -8,7 +8,9 @@ The repository currently provides `curate-genome-annotations`, a skill that can 
 - an explicit gene list or gene file;
 - a deterministic daily batch, such as the 10 lowest-quality eligible features per day.
 
-It supports external MCP agents—including Codex, Claude, and OpenClaw-style clients—as well as the internal CodeXomics ChatBox with DGR connected through MCP.
+It supports Codex, Claude Code, TRAE Work, WorkBuddy/CodeBuddy, and other
+external MCP agents, as well as the internal CodeXomics ChatBox with DGR
+connected through MCP. See [Client compatibility](curate-genome-annotations/references/clients.md).
 
 ## How it works
 
@@ -53,12 +55,14 @@ curate-genome-annotations/
 │   ├── run_annotation_workflow.py   # Single, list, and quality-ranked daily workflows
 │   ├── generate_run_report.py       # Comprehensive token/cost/runtime/evidence run report
 │   ├── install_schedule.py          # launchd, systemd, or cron daily schedule generator
+│   ├── install_for_clients.py       # Copy/symlink the skill into client homes (plan-first)
 │   ├── run_metrics.py               # Token, cost, runtime, and reference accounting
 │   ├── dgr_telemetry.py             # Read-only DGR accounting lookup
 │   └── mcp_http.py                  # Dependency-free MCP HTTP client
 └── references/
     ├── setup.md
     ├── configuration.md
+    ├── clients.md
     ├── workflows.md
     ├── automation.md
     ├── reporting.md
@@ -89,9 +93,14 @@ Link the skill directory into the agent's skills path so it is discovered by nam
 ```bash
 ln -s "$PWD/curate-genome-annotations" "${CODEX_HOME:-$HOME/.codex}/skills/curate-genome-annotations"   # Codex
 ln -s "$PWD/curate-genome-annotations" "$HOME/.claude/skills/curate-genome-annotations"                 # Claude Code
+ln -s "$PWD/curate-genome-annotations" "$HOME/.trae-cn/skills/curate-genome-annotations"                # TRAE Work
+ln -s "$PWD/curate-genome-annotations" "$HOME/.codebuddy/skills/curate-genome-annotations"              # WorkBuddy / CodeBuddy
 ```
 
-A symlink keeps the installed skill in step with `git pull`. The scripts can also be run directly, without native skill discovery.
+A symlink keeps the installed skill in step with `git pull`. Alternatively use
+`python3 curate-genome-annotations/scripts/install_for_clients.py --check` to
+print a plan for every client, then `--install` the ones you want. The scripts
+can also be run directly, without native skill discovery.
 
 ### 2. Download or reuse CodeXomics and DGR
 
@@ -263,6 +272,7 @@ The curator then opens **Annotation Review Center** in CodeXomics to inspect cit
 - [Installation and service startup](curate-genome-annotations/references/setup.md)
 - [Authentication, models, search, and durability](curate-genome-annotations/references/configuration.md)
 - [External MCP and internal ChatBox workflows](curate-genome-annotations/references/workflows.md)
+- [Client compatibility](curate-genome-annotations/references/clients.md)
 - [Recurring automation](curate-genome-annotations/references/automation.md)
 - [Run statistics and reporting](curate-genome-annotations/references/reporting.md)
 - [Troubleshooting](curate-genome-annotations/references/troubleshooting.md)
