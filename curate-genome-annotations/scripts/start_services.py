@@ -58,17 +58,35 @@ def scoped_codexomics_token(environment: dict[str, str]) -> str | None:
     return None
 
 
-def check_endpoint(endpoint: str, token: str | None, required: set[str]) -> dict[str, Any]:
+def check_endpoint(
+    endpoint: str,
+    token: str | None,
+    required: set[str],
+    probe_tool: str | None = None,
+) -> dict[str, Any]:
+    """Check an MCP endpoint, optionally executing a real tool call.
+
+    Listing tools proves the transport is alive, but CodeXomics (Electron)
+    can expose its tool list before its window/renderer is ready to execute
+    calls. Probing a cheap read-only tool (list_genome_windows) catches that
+    half-ready state so callers wait until tool execution actually works.
+    """
     try:
         with McpHttpClient(endpoint, token=token, timeout=8.0) as client:
             missing = require_tools(client, required)
+            probe_error = None
+            if not missing and probe_tool:
+                try:
+                    client.call_tool(probe_tool)
+                except (McpError, ValueError) as exc:
+                    probe_error = str(exc)
             server_info = client.server_info.get("serverInfo", {})
             return {
                 "reachable": True,
-                "ready": not missing,
+                "ready": not missing and probe_error is None,
                 "missingTools": missing,
                 "serverInfo": server_info,
-                "error": None,
+                "error": probe_error,
             }
     except (McpError, ValueError) as exc:
         return {
@@ -164,9 +182,10 @@ def wait_until_ready(
     required: set[str],
     timeout: float,
     process_metadata: dict[str, Any],
+    probe_tool: str | None = None,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
-    last = check_endpoint(endpoint, token, required)
+    last = check_endpoint(endpoint, token, required, probe_tool)
     while time.monotonic() < deadline:
         if last["ready"]:
             return last
@@ -176,7 +195,7 @@ def wait_until_ready(
         except ProcessLookupError as exc:
             raise RuntimeError(f"{name} exited during startup; inspect {process_metadata['log']}") from exc
         time.sleep(1.0)
-        last = check_endpoint(endpoint, token, required)
+        last = check_endpoint(endpoint, token, required, probe_tool)
     raise RuntimeError(
         f"{name} did not become ready at {endpoint} within {timeout:g}s: {last.get('error') or last.get('missingTools')}"
     )
@@ -195,7 +214,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dgr-token", default=None)
     parser.add_argument("--state-dir", type=Path, default=default_state_dir())
     parser.add_argument("--dgr-mode", choices=("development", "production"), default="development")
-    parser.add_argument("--startup-timeout", type=float, default=120.0)
+    parser.add_argument("--startup-timeout", type=float, default=240.0)
     parser.add_argument("--check-only", action="store_true")
     parser.add_argument("--allow-insecure-local-bypass", action="store_true")
     return parser.parse_args()
@@ -212,7 +231,12 @@ def main() -> int:
     dgr_token = args.dgr_token or environment.get("DGR_MCP_TOKEN") or environment.get("ACCESS_PASSWORD")
     statuses = {
         "dgr": check_endpoint(args.dgr_url, dgr_token, DGR_TOOLS),
-        "codexomics": check_endpoint(args.codexomics_url, codexomics_token, CODEXOMICS_TOOLS),
+        "codexomics": check_endpoint(
+            args.codexomics_url,
+            codexomics_token,
+            CODEXOMICS_TOOLS,
+            probe_tool="list_genome_windows",
+        ),
     }
     if args.check_only:
         print(json.dumps(statuses, indent=2))
@@ -300,6 +324,7 @@ def main() -> int:
                 CODEXOMICS_TOOLS,
                 args.startup_timeout,
                 started["codexomics"],
+                probe_tool="list_genome_windows",
             )
 
         print(json.dumps({"ready": True, "statuses": statuses, "started": started}, indent=2))
