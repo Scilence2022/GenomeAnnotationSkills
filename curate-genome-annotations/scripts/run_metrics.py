@@ -554,7 +554,7 @@ def read_agent_usage(
 
 
 def literature_statistics(
-    literature_coverage: Any, attachment_summary: Any, dgr_metadata: Any = None
+    literature_coverage: Any, attachment_summary: Any, dgr_metadata: Any = None, *, citation_validation: Any = None
 ) -> dict[str, Any]:
     """Reference counts for one gene, taken only from reported fields."""
     coverage = literature_coverage if isinstance(literature_coverage, dict) else {}
@@ -571,6 +571,15 @@ def literature_statistics(
     if retained is None:
         retained = summary.get("literatureCount")
 
+    validation = citation_validation if isinstance(citation_validation, dict) else {}
+    full_text_sources = (
+        _optional_int(validation.get("verifiedFullTextSourceCount"))
+        if validation.get("verified") is True else None
+    )
+    full_text_findings = (
+        _optional_int(summary.get("fullTextFindingCount")) if full_text_sources else full_text_sources
+    )
+
     return {
         # Everything PubMed matched for this gene's queries, before budgeting.
         "surveyedRecords": _optional_int(surveyed),
@@ -585,8 +594,8 @@ def literature_statistics(
             summary.get("userDocumentCount") or metrics.get("userDocumentPapers")
         ),
         # Full texts DGR parsed and bound as verifiable evidence spans.
-        "fullTextSources": _optional_int(summary.get("fullTextSourceCount")),
-        "fullTextFindings": _optional_int(summary.get("fullTextFindingCount")),
+        "fullTextSources": full_text_sources,
+        "fullTextFindings": full_text_findings,
         "citationBoundFacts": _optional_int(summary.get("citationBoundFactCount")),
         "literatureBudget": _optional_int(coverage.get("literatureBudget")),
         "bibliographyComplete": coverage.get("linkedBibliographyComplete"),

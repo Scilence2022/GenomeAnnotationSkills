@@ -83,7 +83,7 @@ The report step runs even when the batch exits non-zero, so a partial day is sti
 - selected/submitted/completed/failed/skipped counts;
 - target, DGR task ID, report attachment, and ChangeSet ID per gene;
 - total tokens split by role (research model versus agent model) and by model id, plus cached and cache-replayed tokens;
-- actual cost per model from the operator's price list, or an explicit unavailable reason;
+- estimated cost per model from reported usage and the operator's price list, or an explicit unavailable reason;
 - runtime per gene and for the batch, with DGR research time separated from wall clock;
 - references surveyed, retained, and newly added; full texts adopted;
 - newly incorporated information: qualifier fields updated and citation-bound facts included in Notes;

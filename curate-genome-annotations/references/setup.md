@@ -23,15 +23,19 @@ Use explicit local directories. The bootstrap script skips an existing valid che
 ```bash
 python3 scripts/bootstrap_repositories.py \
   --codexomics-dir /absolute/path/CodeXomics \
-  --dgr-dir /absolute/path/deep-gene-research
+  --dgr-dir /absolute/path/deep-gene-research \
+  --skip-install
 ```
 
-Requirements:
+The checked upstream revisions use different Node versions:
 
-- CodeXomics: Node.js 20 or 22, npm 10+.
-- DGR: Node.js 18.18+, npm 9.8+, and pnpm via Corepack or a system install.
+- CodeXomics source build uses Node.js 22.12+ in the 22.x line and npm 10+.
+- DGR uses Node.js 24 LTS (see its `.node-version`) and pnpm 10.15.1.
 
-Use `--skip-install` when dependencies are already installed. Use `--dry-run` to inspect commands. The script does not switch branches, pull changes, or modify `.env` files.
+For these versions, run the bootstrap command with `--skip-install`. Then run
+`npm ci` in CodeXomics and `pnpm install --frozen-lockfile` in DGR using the
+respective Node version in each checkout. The bootstrap script uses one PATH
+for both installs. Use `--dry-run` to inspect commands.
 
 ## Environment-first configuration
 
@@ -48,21 +52,29 @@ Set CodeXomics MCP auth and DGR provider/search variables as described in `confi
 
 ## Start or reuse services
 
-The startup script checks endpoints first and skips services that already expose the expected tools.
+Start DGR under Node.js 24 first, from its checkout, using `pnpm dev` for local
+development or `pnpm build && pnpm start` for a long-lived production Node
+service. Use a persistent task/document directory. Static Cloudflare Pages and
+ephemeral deployments need a separate long-lived DGR worker for queued
+research, PDF uploads, and artifacts.
+
+Switch to Node.js 22 for CodeXomics and run the startup helper. It reuses the
+running DGR worker and starts the Electron app with its tools-mode listener.
 
 ```bash
 python3 scripts/start_services.py \
-  --codexomics-dir /absolute/path/CodeXomics \
-  --dgr-dir /absolute/path/deep-gene-research
+  --codexomics-dir /absolute/path/CodeXomics
 ```
 
-It launches DGR first, then `npm run start-with-mcp`, stores PID metadata and logs under the selected state directory, and waits for readiness. Existing services are not restarted. For inspection only:
+The helper stores PID metadata and logs for the process it starts. For inspection only:
 
 ```bash
 python3 scripts/start_services.py --check-only
 ```
 
-For a production DGR build, pass `--dgr-mode production`; the script builds DGR before starting it. The default is development mode for local use.
+If both upstream checkouts use a compatible shared PATH, the helper can also
+start DGR with `--dgr-dir`. In that mode `--dgr-mode production` builds DGR
+before starting it.
 
 ## Local bypasses
 

@@ -237,8 +237,8 @@ def cell(value: Any, suffix: str = "") -> str:
 def reported_cell(block: Any) -> str:
     if not isinstance(block, dict) or "total" not in block:
         return UNAVAILABLE
-    text = cell(block.get("total"))
     unreported = block.get("unreportedFor") or 0
+    text = UNAVAILABLE if unreported and block.get("reportedFor") == 0 else cell(block.get("total"))
     if unreported:
         text += f" (not reported for {unreported} gene{'s' if unreported != 1 else ''})"
     return text
@@ -270,7 +270,7 @@ def render_markdown(combined: dict[str, Any], title: str) -> str:
     out.append("")
     out.append(
         "> No ChangeSet was approved or applied by this run. Every proposal below is queued for human "
-        "review in the CodeXomics Annotation Review Center."
+        "review in the CodeXomics Annotation Review."
     )
     out.append("")
 
@@ -329,10 +329,10 @@ def render_markdown(combined: dict[str, Any], title: str) -> str:
                 "semantic cache and were not charged again."
             )
         if cost["complete"]:
-            out.append(f"**Actual cost: {cost['total']:.4f} {cost['currency']}**")
+            out.append(f"**Estimated usage cost: {cost['total']:.4f} {cost['currency']}**")
         else:
             out.append(
-                f"**Actual cost: partially unavailable.** Billed for priced models: "
+                f"**Estimated usage cost is partially unavailable.** Subtotal for priced models: "
                 f"{cost['billedTotal']:.4f} {cost['currency']}. Unpriced models: "
                 + (", ".join(f"`{model}`" for model in cost["unpricedModels"]) or "none")
                 + "."
@@ -385,7 +385,11 @@ def render_markdown(combined: dict[str, Any], title: str) -> str:
                 cell(item.get("locusTag")),
                 cell(item.get("status")),
                 cell(item.get("durationSeconds"), " s"),
-                cell(item.get("researchSeconds"), " s"),
+                (
+                    f"{cell(item['cacheSourceResearchSeconds'], ' s')} (cache source)"
+                    if item.get("cacheSourceResearchSeconds") is not None
+                    else cell(item.get("researchSeconds"), " s")
+                ),
                 cell((item.get("tokens") or {}).get("totalTokens")),
                 cell(item.get("referencesSurveyed")),
                 cell(item.get("fullTextSources")),
@@ -424,7 +428,7 @@ def render_markdown(combined: dict[str, Any], title: str) -> str:
     out.append("## 7. Review handoff")
     out.append("")
     out.append(
-        "Open the CodeXomics **Annotation Review Center**, filter for the ChangeSets listed above, and "
+        "Open the CodeXomics **Annotation Review**, filter for the ChangeSets listed above, and "
         "compare current versus proposed qualifiers and citations before approving anything. The research "
         "principal that created these proposals cannot approve or apply them."
     )

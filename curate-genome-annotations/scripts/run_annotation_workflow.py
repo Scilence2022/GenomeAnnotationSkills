@@ -516,7 +516,9 @@ def compact_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
         "changeSetStatus": workflow.get("changeSetStatus"),
         "reportAttachment": {
             key: attachment.get(key)
-            for key in ("attachmentId", "geneId", "fileName", "size", "sha256", "storedAt", "summary")
+            for key in (
+                "attachmentId", "geneId", "fileName", "size", "sha256", "storedAt", "summary", "citationValidation"
+            )
             if attachment and attachment.get(key) is not None
         }
         if attachment
@@ -527,11 +529,25 @@ def compact_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
         "annotationNote": workflow.get("annotationNote"),
         # Accounting fields. Newer CodeXomics builds persist DGR's reported
         # token usage and elapsed research time on the workflow record; older
-        # builds omit them and the runner falls back to a read-only DGR lookup.
+        # builds may require the archived summary or a read-only DGR lookup.
         "llmUsage": workflow.get("llmUsage"),
-        "researchTimeMs": workflow.get("researchTimeMs") or workflow.get("researchTime"),
+        "researchTimeMs": workflow.get("researchTimeMs", workflow.get("researchTime")),
         "cacheReplay": workflow.get("cacheReplay"),
     }
+
+
+def research_accounting(
+    workflow: dict[str, Any], attachment_summary: dict[str, Any], telemetry: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Prefer locally archived measurements and preserve reported zeroes."""
+    sources = (workflow, attachment_summary, telemetry or {})
+    fields = {
+        key: next((source[key] for source in sources if source.get(key) is not None), None)
+        for key in ("researchTimeMs", "cacheReplay")
+    }
+    if any(source.get("cacheReplay") is True for source in sources):
+        fields["cacheReplay"] = True
+    return fields
 
 
 def poll_workflow(
@@ -609,6 +625,7 @@ def gene_usage_entries(
     telemetry: dict[str, Any] | None,
     workflow_usage: Any,
     *,
+    attachment_usage: Any = None,
     gene: str,
     thinking_model: str | None,
     task_model: str | None,
@@ -616,6 +633,9 @@ def gene_usage_entries(
     """Ledger entries for one gene's DGR research, from whichever source has them."""
     usage_payload = workflow_usage
     source = "codexomics-workflow"
+    if not isinstance(usage_payload, dict) or not usage_payload:
+        usage_payload = attachment_usage
+        source = "codexomics-attachment"
     if not isinstance(usage_payload, dict) or not usage_payload:
         usage_payload = telemetry.get("llmUsage") if isinstance(telemetry, dict) else None
         source = "dgr-telemetry"
@@ -710,7 +730,7 @@ def sum_reported(values: list[Any]) -> dict[str, Any]:
     can distinguish "no references were surveyed" from "nobody told us".
     """
     reported = [float(value) for value in values if isinstance(value, (int, float)) and not isinstance(value, bool)]
-    total = sum(reported)
+    total = sum(reported, 0.0)
     return {
         "total": int(total) if total.is_integer() else round(total, 3),
         "reportedFor": len(reported),
@@ -745,6 +765,7 @@ def build_metrics(
                 "changeSetId": item.get("changeSetId"),
                 "durationSeconds": item.get("durationSeconds"),
                 "researchSeconds": item.get("researchSeconds"),
+                "cacheSourceResearchSeconds": item.get("cacheSourceResearchSeconds"),
                 "cacheReplay": item.get("cacheReplay"),
                 "tokenUsageSource": item.get("tokenUsageSource"),
                 "tokens": None if gene_ledger.empty else gene_ledger.to_dict()["totals"],
@@ -1298,16 +1319,8 @@ def main() -> int:
                             compact = compact_workflow(workflow)
                             result.update(compact)
                             if normalized(compact.get("status")) == "completed":
-                                attachment_summary = (
-                                    compact.get("reportAttachment", {}).get("summary", {})
-                                    if isinstance(compact.get("reportAttachment"), dict)
-                                    else {}
-                                )
-                                full_text_count = int(attachment_summary.get("fullTextSourceCount") or 0)
-                                full_text_finding_count = int(attachment_summary.get("fullTextFindingCount") or 0)
-                                result["fullTextSourceCount"] = full_text_count
-                                result["fullTextFindingCount"] = full_text_finding_count
-                                result["fullTextRequirementMet"] = full_text_count > 0
+                                attachment = compact.get("reportAttachment") or {}
+                                attachment_summary = attachment.get("summary") or {}
                                 literature_coverage = (
                                     compact.get("literatureCoverage")
                                     or attachment_summary.get("literatureCoverage")
@@ -1355,48 +1368,61 @@ def main() -> int:
                                         compact.get("proposalReason")
                                         or "Research completed without a reviewable annotation ChangeSet"
                                     )
-                                if args.full_text_policy == "require" and full_text_count == 0:
-                                    result["curationOutcome"] = "full_text_required_but_unavailable"
-                                    result["curationIssue"] = (
-                                        "Research completed without a verified full-text source; annotation review must not treat it as a full-text report"
-                                    )
-                                elif research_documents and full_text_count == 0:
-                                    result["curationWarning"] = (
-                                        "The user PDFs were parsed or screened but none produced exact-target full-text evidence"
-                                    )
-
                                 # --- accounting -------------------------------
                                 telemetry: dict[str, Any] | None = None
-                                if telemetry_client is not None and not isinstance(compact.get("llmUsage"), dict):
+                                attachment_usage = attachment_summary.get("llmUsage")
+                                if telemetry_client is not None and not any(
+                                    isinstance(usage, dict) and usage
+                                    for usage in (compact.get("llmUsage"), attachment_usage)
+                                ):
                                     telemetry, telemetry_warning = telemetry_client.fetch(str(task_id))
                                     if telemetry_warning:
                                         accounting_warnings.append(telemetry_warning)
                                         if args.dgr_telemetry == "require":
                                             raise RuntimeError(telemetry_warning)
                                 if isinstance(telemetry, dict):
-                                    result["cacheReplay"] = telemetry.get("cacheReplay")
-                                    if result.get("researchTimeMs") is None:
-                                        result["researchTimeMs"] = telemetry.get("researchTimeMs")
                                     if not isinstance(literature_coverage, dict) and isinstance(
                                         telemetry.get("literatureCoverage"), dict
                                     ):
                                         result["literatureCoverage"] = telemetry["literatureCoverage"]
                                     if telemetry.get("searchDiagnostics"):
                                         result["searchDiagnostics"] = telemetry["searchDiagnostics"]
+                                result.update(research_accounting(compact, attachment_summary, telemetry))
                                 research_ms = result.get("researchTimeMs")
-                                if isinstance(research_ms, (int, float)) and research_ms >= 0:
-                                    result["researchSeconds"] = round(float(research_ms) / 1000.0, 3)
-                                result["references"] = literature_statistics(
+                                if (
+                                    isinstance(research_ms, (int, float))
+                                    and not isinstance(research_ms, bool)
+                                    and research_ms >= 0
+                                ):
+                                    time_field = (
+                                        "cacheSourceResearchSeconds" if result.get("cacheReplay") else "researchSeconds"
+                                    )
+                                    result[time_field] = round(float(research_ms) / 1000.0, 3)
+                                references = literature_statistics(
                                     result.get("literatureCoverage"),
                                     attachment_summary,
                                     telemetry,
+                                    citation_validation=attachment.get("citationValidation"),
                                 )
+                                result["references"] = references
+                                full_text_count = references["fullTextSources"]
+                                result["fullTextSourceCount"] = full_text_count
+                                result["fullTextFindingCount"] = references["fullTextFindings"]
+                                result["fullTextRequirementMet"] = bool(full_text_count)
+                                if full_text_count is None:
+                                    accounting_warnings.append(
+                                        f"{candidate.identifier}: the archive has no verified full-text source count"
+                                    )
+                                if args.full_text_policy == "require" and not full_text_count:
+                                    result["curationOutcome"] = "full_text_required_but_unavailable"
+                                    result["curationIssue"] = "The archived report has no confirmed citation-bound full-text source"
                                 if isinstance(annotation_note, dict):
                                     result["annotationNote"] = note_delta(annotation_note)
                                 entries, usage_warnings = gene_usage_entries(
                                     result,
                                     telemetry,
                                     compact.get("llmUsage"),
+                                    attachment_usage=attachment_usage,
                                     gene=candidate.identifier,
                                     thinking_model=args.dgr_thinking_model,
                                     task_model=args.dgr_task_model,

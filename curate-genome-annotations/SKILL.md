@@ -16,7 +16,7 @@ Use CodeXomics as the genome authority and ChangeSet boundary. Use DGR as the ev
 5. Never call `request_annotation_approval`, `apply_annotation_changeset`, raw annotation-editing tools, or rollback tools from an unattended research workflow.
 6. Never give an unattended worker a curator credential. Use a research key limited to `annotation:read`, `annotation:research`, and `annotation:propose`.
 7. Report partial failures per gene. Do not claim an annotation was updated when only a proposal was created.
-8. Treat a PDF as full text only when DGR parses its pages and CodeXomics verifies exact text spans, offsets, and hashes in the archived report. Do not relabel an abstract, snippet, OCR failure, or inaccessible document as full text.
+8. Count full text as adopted only when the CodeXomics archive receipt verifies citation-bound full-text evidence. Private PDF and DOI-only excerpts in DGR's review evidence can inform the curator. Keep these excerpts separate from facts eligible for a ChangeSet.
 9. Report only statistics a service actually reported. Never estimate tokens, cost, or runtime from message length, gene count, or elapsed time, and never present a missing measurement as zero. An unreported statistic is `unavailable` with its reason.
 
 ## Choose the execution path
@@ -45,7 +45,7 @@ Read [references/workflows.md](references/workflows.md) before the first run in 
    For one explicit gene, pass user PDFs with repeatable `--pdf` options. User PDFs are screened first, while web discovery still runs and open full text is retrieved when available.
 6. Poll the durable workflow until it reaches a terminal state. Do not infer completion from elapsed time.
 7. Record the archived report attachment, proposal status, ChangeSet ID, and failure reason for each gene.
-8. Direct the human reviewer to CodeXomics **Annotation Review Center** for individual or batch review.
+8. Direct the human reviewer to CodeXomics **Annotation Review** for the proposed diff and its linked research report.
 
 Use the production runner for repeatable work:
 
@@ -91,7 +91,7 @@ Two different models bill for one annotated gene: the **research** model DGR run
    ```
 
 2. **Record your own token usage.** Nothing in CodeXomics or DGR can observe the orchestrating agent's spend. Append one JSON Lines record per gene to the `--agent-usage-file` with the same `runId`, your model id, and the prompt/completion tokens your runtime reports. If your runtime does not expose usage, say so; do not estimate it.
-3. Research-model tokens come from DGR's provider-reported `llmUsage`. The runner reads it from the CodeXomics workflow record, and falls back to a **read-only** DGR task-status lookup when that build does not surface it. This fallback never starts, cancels, or mutates research.
+3. Research-model tokens come from DGR's provider-reported `llmUsage`. The runner checks the CodeXomics workflow and archived attachment before using a **read-only** DGR task-status lookup.
 4. Cost needs a price list. Copy `references/pricing.template.json`, fill in what the provider actually charges, and pass `--pricing-file`. Without it, tokens are reported and cost is `unavailable` — never zero.
 5. Generate the report:
 
@@ -102,7 +102,7 @@ Two different models bill for one annotated gene: the **research** model DGR run
 
 6. Read the report's data-gaps section back to the user. A missing statistic is a finding, not something to quietly omit.
 
-DGR serves repeat requests from a semantic cache and replays the original run's token counts. Those are reported as `replayedTotalTokens` and excluded from cost.
+DGR semantic cache replays carry the original run's usage and timing. The runner records `replayedTotalTokens` and `cacheSourceResearchSeconds` separately from current-run cost and research time.
 
 ## Recurring daily jobs
 
@@ -137,7 +137,7 @@ Return a concise run summary containing:
 For a batch run, also return the statistics block:
 
 - total tokens across every step, split by role (research model versus agent model) and by model id, with cached-input and cache-replayed tokens shown separately;
-- actual cost per model and in total, in the price list's currency, or `unavailable` with the reason;
+- cost estimated from reported usage and the price list, per model and in total, or `unavailable` with the reason;
 - runtime per gene and for the batch, separating DGR research time from wall clock;
 - references surveyed, references retained, and references newly added to annotations;
 - full texts adopted as verified evidence, and the evidence spans bound to facts;

@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 SCRIPT_DIR = Path(__file__).resolve().parents[1]
@@ -277,11 +278,20 @@ class LiteratureStatisticsTests(unittest.TestCase):
         stats = metrics.literature_statistics(
             {"pubmedTotalMatchCount": 812, "retainedAbstractCount": 300, "literatureBudget": 300},
             {"fullTextSourceCount": 12, "fullTextFindingCount": 41, "citationBoundFactCount": 18},
+            citation_validation={"verified": True, "verifiedFullTextSourceCount": 4},
         )
         self.assertEqual(stats["surveyedRecords"], 812)
         self.assertEqual(stats["retainedReferences"], 300)
-        self.assertEqual(stats["fullTextSources"], 12)
+        self.assertEqual(stats["fullTextSources"], 4)
         self.assertEqual(stats["citationBoundFacts"], 18)
+
+    def test_parsed_review_documents_do_not_satisfy_verified_full_text(self) -> None:
+        attachment = {"fullTextSourceCount": 2, "fullTextFindingCount": 0}
+        stats = metrics.literature_statistics(
+            None, attachment, citation_validation={"verified": True, "verifiedFullTextSourceCount": 0}
+        )
+        self.assertEqual(stats["fullTextSources"], 0)
+        self.assertIsNone(metrics.literature_statistics(None, attachment)["fullTextSources"])
 
 
 class TelemetryTests(unittest.TestCase):
@@ -317,6 +327,36 @@ class TelemetryTests(unittest.TestCase):
         )
         self.assertTrue(summary["cacheReplay"])
 
+    def test_checking_the_cache_does_not_mark_a_result_as_replayed(self) -> None:
+        summary = dgr_telemetry.summarize_task_telemetry({"taskId": "t", "step": "cache-check"})
+        self.assertFalse(summary["cacheReplay"])
+
+    def test_compact_projection_is_preferred_with_legacy_full_result_fallback(self) -> None:
+        class Client:
+            def __init__(self, legacy: bool) -> None:
+                self.legacy = legacy
+                self.modes: list[str] = []
+
+            def call_tool(self, name: str, arguments: dict) -> dict:
+                mode = arguments["resultMode"]
+                self.modes.append(mode)
+                usage = None if self.legacy and mode == "annotation" else DGR_PHASE_USAGE
+                return {
+                    "taskId": "t",
+                    "status": "completed",
+                    "result": {"metadata": {"llmUsage": usage}},
+                }
+
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy):
+                client = Client(legacy)
+                lookup = dgr_telemetry.DgrTelemetryClient("http://unused", None)
+                with patch.object(lookup, "_connect", return_value=client):
+                    telemetry, warning = lookup.fetch("t")
+                self.assertIsNone(warning)
+                self.assertEqual(telemetry["llmUsage"], DGR_PHASE_USAGE)
+                self.assertEqual(client.modes, ["annotation", "full"] if legacy else ["annotation"])
+
 
 class RunnerAccountingTests(unittest.TestCase):
     def test_sum_reported_separates_zero_from_unreported(self) -> None:
@@ -324,6 +364,21 @@ class RunnerAccountingTests(unittest.TestCase):
             workflow.sum_reported([3, 0, None, 5]),
             {"total": 8, "reportedFor": 3, "unreportedFor": 1},
         )
+        self.assertEqual(workflow.sum_reported([None]), {"total": 0, "reportedFor": 0, "unreportedFor": 1})
+
+    def test_archived_usage_and_replay_metadata_are_used_without_dgr(self) -> None:
+        result = workflow.research_accounting(
+            {"researchTimeMs": None, "cacheReplay": False},
+            {"researchTimeMs": 0, "cacheReplay": True},
+        )
+        entries, _ = workflow.gene_usage_entries(
+            result, None, None, attachment_usage=DGR_PHASE_USAGE,
+            gene="lysC", thinking_model="test-model", task_model="test-model",
+        )
+        self.assertEqual(result["researchTimeMs"], 0)
+        self.assertEqual(result["tokenUsageSource"], "codexomics-attachment")
+        self.assertTrue(entries)
+        self.assertTrue(all(not entry.billable for entry in entries))
 
     def test_cached_research_is_recorded_as_replayed_and_warned_about(self) -> None:
         result: dict = {}
@@ -430,7 +485,7 @@ class RunReportTests(unittest.TestCase):
             combined = report.combine(report.load_documents([path]))
             markdown = report.render_markdown(combined, "Test run")
         self.assertFalse(combined["tokens"]["cost"]["complete"])
-        self.assertIn("Actual cost: partially unavailable", markdown)
+        self.assertIn("Estimated usage cost is partially unavailable", markdown)
         self.assertIn("agent-side token usage", markdown)
         # thrB failed before any reference statistic existed.
         self.assertIn("not reported for 1 gene", markdown)
@@ -466,7 +521,7 @@ class RunReportTests(unittest.TestCase):
         self.assertEqual(combined["newInformation"]["changeSetsCreated"], 1)
         self.assertEqual(combined["runtime"]["genesCompleted"], 1)
         self.assertEqual(combined["runtime"]["perGeneWallClockSeconds"]["total"], 1200)
-        self.assertIn("Actual cost:", markdown)
+        self.assertIn("Estimated usage cost:", markdown)
         self.assertIn("deepseek-v4-flash", markdown)
 
     def test_two_summaries_combine_into_one_batch_report(self) -> None:

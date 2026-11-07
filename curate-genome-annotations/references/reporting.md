@@ -2,7 +2,8 @@
 
 A daily batch is expected to report what it consumed and what it produced:
 tokens per model, runtime per gene and in total, references surveyed and newly
-added, full texts adopted, newly incorporated information, and the actual cost.
+added, full texts adopted, newly incorporated information, and cost estimated
+from reported usage.
 
 Every number in a run report comes from something a service reported. Nothing
 is estimated from character counts or elapsed time. A statistic that no service
@@ -15,14 +16,14 @@ never masquerades as a measurement.
 | --- | --- | --- |
 | Research-model tokens | DGR `metadata.llmUsage`, via CodeXomics or a read-only DGR status lookup | Provider-reported per LLM phase |
 | Agent-model tokens | The agent usage sidecar | Only the orchestrating agent can observe its own spend |
-| DGR research time | DGR `metadata.researchTime` | Milliseconds DGR measured for the run |
+| DGR research time | DGR `metadata.researchTime` | For a fresh DGR 0.22 result, queue entry to completion, including queue and retry time |
 | Per-gene wall clock | The runner | Includes CodeXomics resolution, polling, and archival |
 | References surveyed | DGR `literatureCoverage.pubmedTotalMatchCount` | Everything PubMed matched, before budgeting |
 | References retained | `literatureCoverage.retainedAbstractCount` / `literatureMetrics.totalPapers` | Abstracts fed to synthesis |
-| Full texts adopted | Archived report `summary.fullTextSourceCount` / `fullTextFindingCount` | Verified spans only |
+| Full texts adopted | Archive receipt `citationValidation.verifiedFullTextSourceCount` and archive `summary.fullTextFindingCount` | Verified documents and citation-bound spans |
 | Newly added references | ChangeSet `db_xref` / evidence operations, minus references the annotation already carried | Needs `get_annotation_changeset` |
 | Newly incorporated information | ChangeSet qualifier operations and the Genome Annotation Note coverage | |
-| Cost | The operator's price list × reported tokens | Never guessed |
+| Cost | The operator's price list × reported tokens | Estimate for measured usage |
 
 ## Two models, two ledgers
 
@@ -89,12 +90,11 @@ Agents that cannot report usage should say so; do not fabricate the numbers.
 
 ## Where research telemetry comes from
 
-The runner prefers `workflow.llmUsage` on the CodeXomics workflow record. Some
-CodeXomics/DGR builds project the DGR task result down to the annotation
-proposal, which drops `metadata.llmUsage`, `metadata.researchTime`, and the
-coverage fields. When the workflow record has no usage block, the runner falls
-back to a **read-only** DGR status lookup for the task CodeXomics already
-created:
+Current CodeXomics and DGR preserve accounting on the workflow record and
+the archived attachment. The runner checks both before a **read-only**
+`get-task-status` lookup for the same task. It requests the compact annotation
+projection first, then the full result if a completed legacy projection lacks
+usage:
 
 ```bash
 --dgr-telemetry auto      # default: use the fallback when needed
@@ -106,11 +106,10 @@ This is not an alternative orchestration path. It never starts, cancels, or
 mutates research; it re-reads a task by id. Research is still started and
 polled exclusively through CodeXomics.
 
-The fallback exists because of a specific upstream gap, not by design. The
-repository's `integration/` directory documents the CodeXomics and DGR changes
-that make the workflow record self-sufficient; after they land, a run reports
-`tokenUsageSource: "codexomics-workflow"` and `--dgr-telemetry off` still
-produces complete statistics.
+The summary records `tokenUsageSource` as `codexomics-workflow`,
+`codexomics-attachment`, or `dgr-telemetry`. DGR also has its own optional
+`DGR_LLM_RATE_TABLE` estimate. The skill's pricing file covers both DGR and
+agent usage independently of that server setting.
 
 ## Cached research
 
@@ -118,8 +117,8 @@ DGR serves a matching request from its semantic cache and replays the original
 run's result verbatim, including its token counts and research time. Those
 tokens were reported but not charged again. The runner marks them
 `billable: false`, reports them under `replayedTotalTokens`, and excludes them
-from cost. Treat a batch with many replays as a coverage question, not a
-cheap day.
+from cost. Original duration appears as `cacheSourceResearchSeconds` and is
+excluded from the current batch's summed DGR research time.
 
 ## Generating the report
 

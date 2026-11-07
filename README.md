@@ -23,7 +23,7 @@ flowchart LR
     D --> E["Evidence, citations, and annotation proposal"]
     E --> C
     C --> R["Archived full report and reviewable ChangeSet"]
-    R --> H["Human review in Annotation Review Center"]
+    R --> H["Human review in Annotation Review"]
     H --> P["Approved annotation application"]
 ```
 
@@ -74,8 +74,8 @@ curate-genome-annotations/
 
 - Python 3.10 or newer for the bundled scripts;
 - Git;
-- Node.js 20 or 22 and npm 10+ for CodeXomics;
-- Node.js 18.18+, npm 9.8+, and pnpm for DGR;
+- Node.js 22.12+ in the 22.x line and npm 10+ for CodeXomics source builds;
+- Node.js 24 LTS and pnpm 10.15.1 for DGR;
 - a configured model provider and a working DGR search provider;
 - macOS, Linux, or another environment capable of running the CodeXomics Electron application.
 
@@ -109,10 +109,13 @@ The bootstrap script skips valid existing checkouts and never pulls, switches, o
 ```bash
 python3 curate-genome-annotations/scripts/bootstrap_repositories.py \
   --codexomics-dir /absolute/path/CodeXomics \
-  --dgr-dir /absolute/path/deep-gene-research
+  --dgr-dir /absolute/path/deep-gene-research \
+  --skip-install
 ```
 
-Use `--skip-install` when dependencies are already installed, or `--dry-run` to inspect the commands first.
+Use `--skip-install` for the current upstream revisions and install each
+checkout under its own Node version. Follow the
+[setup guide](curate-genome-annotations/references/setup.md).
 
 ### 3. Configure authentication, models, and search
 
@@ -130,10 +133,13 @@ For scoped CodeXomics keys, DGR authentication, model-provider variables, durabl
 
 ### 4. Start or validate the services
 
+Start DGR under Node.js 24 as described in the
+[setup guide](curate-genome-annotations/references/setup.md), then use Node.js
+22 to start CodeXomics and reuse the running DGR endpoint.
+
 ```bash
 python3 curate-genome-annotations/scripts/start_services.py \
-  --codexomics-dir /absolute/path/CodeXomics \
-  --dgr-dir /absolute/path/deep-gene-research
+  --codexomics-dir /absolute/path/CodeXomics
 ```
 
 Default local endpoints:
@@ -190,7 +196,11 @@ python3 curate-genome-annotations/scripts/run_annotation_workflow.py \
   --full-text-policy require
 ```
 
-PDF inputs are available only for a single explicit gene. CodeXomics registers each validated PDF as a gene-scoped attachment; DGR parses text-bearing pages, continues web/database retrieval plus its open full-text waterfall (Europe PMC, PubTator, bioRxiv, OpenAlex, CORE, Unpaywall), and records exact full-text excerpts with content hashes and offsets. `require` fails the run outcome if no verified full-text source survives exact-target screening. Image-only scans currently report an OCR limitation instead of being mislabeled as full text.
+PDF inputs are available for a single explicit gene. DGR parses text-bearing
+pages and continues web and database retrieval. Private PDFs and DOI-only
+excerpts can appear as review evidence. `require` checks the archived
+CodeXomics citation-validation receipt for a full-text source that supports
+an exact-target proposal fact.
 
 ### Gene file
 
@@ -248,7 +258,9 @@ python3 curate-genome-annotations/scripts/generate_run_report.py \
   --json-output /reports/2026-08-20-report.json
 ```
 
-The report covers tokens per model, actual cost, runtime per gene and in total, references surveyed and newly added, full texts adopted, and newly incorporated information.
+The report covers tokens per model, estimated usage cost, runtime per gene
+and in total, references surveyed and newly added, full texts adopted, and
+newly incorporated information.
 
 Every number comes from something a service reported. Nothing is estimated from character counts or elapsed time, and a statistic no service reported is shown as `unavailable` with its reason rather than as zero — including cost when no price list is configured, and agent-model tokens when the agent did not write its usage sidecar. Read [`references/reporting.md`](curate-genome-annotations/references/reporting.md) for where each statistic originates and what to do about each gap.
 
@@ -264,7 +276,7 @@ A successful research run reports, per gene:
 - ChangeSet ID and review status;
 - any failure or skipped reason.
 
-The curator then opens **Annotation Review Center** in CodeXomics to inspect citations and current-versus-proposed qualifiers. Eligible ChangeSets may be selected for batch review. Research completion alone does not mean the source genome was modified.
+The curator then opens **Annotation Review** in CodeXomics to inspect citations and current-versus-proposed qualifiers. Eligible ChangeSets may be selected for batch review. Research completion alone does not mean the source genome was modified.
 
 ## Documentation
 
