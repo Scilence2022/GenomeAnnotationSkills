@@ -23,18 +23,28 @@ Pass only the research-agent key to this skill using `CODEXOMICS_MCP_API_KEY` or
 
 ## DGR authentication and durability
 
-Set a strong `ACCESS_PASSWORD` of at least 16 characters. CodeXomics uses the same value in `DGR_MCP_TOKEN` when proxying DGR calls.
+Set a strong `ACCESS_PASSWORD` of at least 16 characters. CodeXomics uses the
+same value in `DGR_MCP_TOKEN` when proxying DGR calls. Use HTTPS for a remote
+DGR endpoint. For DGR 0.22, use this legacy bearer with the current CodeXomics
+target format. Named DGR workspace tokens require an exact target workspace
+match, and their ID rules reject CodeXomics's current `ws_…` IDs.
 
 For resumable local or server operation:
 
 ```bash
 export MCP_TASK_STORAGE_FILE=/durable/private/path/dgr-tasks.json
+export MCP_RESEARCH_DOCUMENT_STORAGE_DIR=/durable/private/path/research-documents
 export DGR_WORKER_COUNT=1
 export DGR_MAX_CONCURRENT_RESEARCH=2
 export MCP_SERVER_BASE_URL=http://127.0.0.1:3000
 ```
 
-Use one DGR process per JSON ledger. Do not point multiple processes at the same task file. The task file can contain research inputs and outputs; protect it accordingly.
+Use one long-lived DGR process per task ledger on a private persistent
+filesystem. Keep the ledger, the sibling `research-results/` directory, and
+uploaded documents together in backups. JSON is the default.
+`DGR_TASK_BACKEND=sqlite` imports a legacy JSON ledger and validates its
+artifacts. Follow the [DGR operations guide](https://github.com/Scilence2022/DeepGeneResearch/blob/main/docs/research-operations.md)
+for a planned migration.
 
 User research PDFs are stored by DGR as content-addressed, mode-`0600` documents. Set `MCP_RESEARCH_DOCUMENT_STORAGE_DIR` to a protected persistent directory if the default `.dgr-research-documents` location is unsuitable. Do not place this directory in a web-served tree or shared source checkout.
 
@@ -82,7 +92,10 @@ Copy `references/pricing.template.json` outside the repository and fill in the p
 
 Token attribution also needs DGR's model ids. `MCP_THINKING_MODEL` and `MCP_TASK_MODEL` are used automatically when exported into the runner's process; otherwise pass `--dgr-thinking-model` and `--dgr-task-model`. A scheduled job frequently has a narrower environment than an interactive shell — export them in the job's environment file.
 
-`DGR_MCP_URL` and `DGR_MCP_TOKEN` enable the runner's read-only DGR telemetry fallback, used only when the CodeXomics workflow record carries no `llmUsage`. It re-reads tasks CodeXomics already created and never starts, cancels, or mutates research.
+`DGR_MCP_URL` and `DGR_MCP_TOKEN` configure the runner's read-only DGR
+telemetry fallback when neither CodeXomics's workflow nor its attachment
+summary contains usage. The fallback must use the same workspace credential
+that CodeXomics used to submit the task.
 
 ## MCP client variables
 

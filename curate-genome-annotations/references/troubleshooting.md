@@ -54,7 +54,12 @@ The target feature or annotation revision changed after proposal creation. Start
 
 ## DGR ledger problems
 
-Run one DGR process per task file. On corruption, DGR may quarantine the ledger with a `.corrupt.*` suffix and lock further work. Preserve the files, inspect logs and filesystem permissions, then recover deliberately. Never delete the ledger blindly; it is part of the research audit trail.
+Run one long-lived DGR process per ledger on a persistent filesystem. A
+second process may fail to acquire the ledger lock. On corruption, DGR can
+quarantine the ledger and stop accepting work. Preserve the quarantined
+ledger, result sidecars, and PDFs. Restore a verified matching backup or
+follow the upstream recovery procedure after reconciling task and idempotency
+records.
 
 ## Port already in use
 
@@ -67,25 +72,17 @@ Work through the chain in order; each step names what to check.
 1. **Is a price list configured?** Without `--pricing-file` or
    `GENOME_ANNOTATION_PRICING_FILE`, tokens are still counted but cost is
    `unavailable`. That is the intended behaviour, not a failure.
-2. **Did DGR report usage at all?** Query the task directly:
-
-   ```bash
-   python3 scripts/mcp_http.py --endpoint "$DGR_MCP_URL" --token "$DGR_MCP_TOKEN"
-   ```
-
-   then read the task with `get-task-status` and `resultMode: "full"`. If
-   `result.metadata.llmUsage` is absent, the DGR build predates usage
-   reporting; upgrade DGR. If it is present, continue.
-3. **Does the CodeXomics workflow record carry it?** Call
-   `get_annotation_research_workflow` and look for `workflow.llmUsage`. Several
-   CodeXomics/DGR builds poll DGR with `resultMode: "annotation"`, and that
-   projection keeps only `researchTime`, `dataSources`, `sourceCoverage`, and
-   `confidence` — it drops `llmUsage`, `llmSynthesis`, `literatureMetrics`,
-   `searchDiagnostics`, and the top-level `annotationNote`. On such a build the
-   workflow record cannot show token counts no matter how the runner asks.
+2. **Did DGR report usage at all?** Use an MCP client with the task's DGR
+   bearer to call `get-task-status` with `resultMode: "annotation"`.
+   If a legacy response lacks `result.metadata.llmUsage`, check `"full"` once.
+   A missing usage block can also mean that the provider did not report it.
+3. **Does CodeXomics carry it?** Call `get_annotation_research_workflow` and
+   check `workflow.llmUsage` and `workflow.reportAttachment.summary.llmUsage`.
+   Current upstream builds retain usage in both locations when DGR reports it.
 4. **Is the read-only DGR fallback enabled?** It is the default. Confirm
    `DGR_MCP_URL` and `DGR_MCP_TOKEN` are exported for the runner's process —
    a scheduled job often has a narrower environment than an interactive shell.
+   A task can appear missing if the runner uses a different workspace bearer.
    Run with `--dgr-telemetry require` to turn a silent gap into a hard failure
    while diagnosing.
 5. **Are the model ids known?** Tokens filed under `unknown:dgr-thinking` or

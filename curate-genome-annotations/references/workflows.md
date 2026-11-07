@@ -13,6 +13,8 @@ Use CodeXomics MCP tools mode as the only client-facing orchestration endpoint. 
    - `start_annotation_research`
    - `get_annotation_research_workflow`
 2. Call `load_genome_file` with an absolute path unless the intended file is already loaded.
+   The target must be in the primary annotation set. For FASTA plus GFF, load
+   or merge the features into that set before resolving targets.
 3. Call `list_genome_windows`, identify the correct window, and attach its `windowId` and `expected_genome` to subsequent calls.
 4. Call `resolve_annotation_target`. Require a supported gene-associated feature and a stable locus tag, protein identifier, or gene symbol. Co-located records resolve to CDS first, then a specific RNA/transcript feature, then generic gene.
 5. Call `start_annotation_research`. The loaded genome supplies organism metadata when available; supply `organism` only as a fallback. For user PDFs, pass absolute paths in `researchDocumentPaths`; CodeXomics uploads them to DGR and binds the resulting content-addressed document IDs to the workflow.
@@ -28,9 +30,19 @@ Use PDFs only for one explicitly resolved gene per invocation. This prevents a d
 
 1. Validate each absolute path, PDF signature, 20 MiB size limit, and SHA-256. Deduplicate identical content and accept at most eight documents.
 2. Send the paths only to CodeXomics. CodeXomics grants narrowly scoped file access, uploads the bytes over the authenticated DGR connection, stores the returned content-addressed IDs as gene-scoped attachments, and includes those IDs in workflow idempotency.
-3. DGR parses all text-bearing pages before web discovery synthesis, screens exact target relevance, then continues database/web searches and runs its full-text provider waterfall: Europe PMC JATS XML, PubTator BioC (pre-sectioned, entity-annotated), bioRxiv/medRxiv preprint PDFs, then open-access copies located via OpenAlex (GROBID TEI), CORE, and Unpaywall. Works Crossref reports as retracted are excluded from evidence. User PDFs are prioritized evidence, not a reason to skip broader retrieval.
-4. Accept a full-text finding only when it is an exact excerpt with document/text SHA-256, UTF-16 offsets, optional page locator, PMID citation when available, and an archived source binding. Keep unusable scans, target-negative PDFs, and abstract-only records visible as coverage gaps.
-5. Inspect `reportAttachment.summary.fullTextSourceCount` and `fullTextFindingCount`. Under `--full-text-policy require`, treat zero verified full-text sources as a workflow failure even if DGR otherwise completed.
+3. DGR parses text-bearing pages and continues database and web searches.
+   Provider configuration controls open full-text retrieval. Private PDF and
+   DOI-only excerpts may be preserved in `dgr.review-evidence.v1` for curator
+   review, with hashes and offsets but without ChangeSet write eligibility.
+4. For exact-target ChangeSet evidence, CodeXomics verifies the PMID citation,
+   archive binding, document/text SHA-256 and UTF-16 offsets against the
+   archived report. Keep image-only scans and target-negative PDFs visible as
+   coverage gaps.
+5. Read `reportAttachment.citationValidation.verifiedFullTextSourceCount`
+   with `verified: true`. `summary.fullTextSourceCount` counts parsed documents,
+   including those without a validated fact. Under `--full-text-policy require`,
+   a zero or unavailable verified count fails the runner's outcome check even
+   if CodeXomics already created a reviewable ChangeSet.
 
 The current parsers handle text-bearing PDFs, PMC JATS XML, PubTator BioC, and GROBID TEI; every format is normalized to the same canonical text with SHA-256 hashes and UTF-16 offsets before evidence is accepted. Image-only scans or complex tables may require future OCR/table extraction; report that limitation explicitly rather than fabricating coverage.
 
@@ -89,7 +101,7 @@ Exclude lexical overmatches such as `lysC` interpreted as “lysozyme C”. Orga
 
 CodeXomics derives a semantic idempotency key when none is supplied. The runner supplies a stable key derived from genome path, exact target, and research intent. Idempotency handles identical requests; the separate research-coverage ledger prevents a changed prompt or a different agent from unintentionally repeating a completed target.
 
-Persist task IDs before polling. On interruption, rerun with the same state directory and inputs. Never discard the DGR ledger or CodeXomics sidecar to force a retry. Use `--force-refresh` only when intentionally bypassing DGR's semantic result cache; it does not remove identity checks.
+Persist task IDs before polling. On interruption, rerun with the same state directory and inputs. Preserve the DGR ledger, its artifact directory, and the matching CodeXomics sidecar. The CodeXomics sidecar binds to both the canonical path and genome content, so a replacement at the same path can open a separate history. Use `--force-refresh` only when intentionally bypassing DGR's semantic result cache.
 
 When polling or proposal materialization fails after a task has started, retain the task ID and record the failure as retryable. Failed, cancelled, and completed-but-unarchived runs do not count as durable coverage. Correct the underlying service, validation, or evidence problem and rerun; CodeXomics resumes exact active work and skips only safely covered targets.
 
@@ -97,4 +109,4 @@ Use `--research-refresh-days N` when the curation policy requires periodic re-re
 
 ## Human review
 
-Research completion is not annotation application. The reviewer opens CodeXomics Annotation Review Center, filters the queue, examines current versus proposed qualifiers and citations, selects eligible ChangeSets, and uses batch approval/application only under the configured governance policy. The creator must not self-approve.
+Research completion is not annotation application. The reviewer opens CodeXomics Annotation Review, filters the queue, examines current versus proposed qualifiers and citations, selects eligible ChangeSets, and uses batch approval/application only under the configured governance policy. The creator must not self-approve.

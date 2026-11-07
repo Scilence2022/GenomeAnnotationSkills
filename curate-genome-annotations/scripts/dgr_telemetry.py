@@ -3,10 +3,9 @@
 
 CodeXomics remains the only orchestration path: research is always started and
 polled through it. This module never starts, cancels, or mutates anything. It
-only re-reads a task CodeXomics already created, because some CodeXomics/DGR
-builds project the task result down to the annotation proposal and drop the
-`metadata.llmUsage`, `metadata.researchTime`, and coverage fields a cost report
-needs.
+only re-reads a task CodeXomics already created. Current DGR builds include
+accounting fields in the annotation projection, while older builds may
+require a full result read.
 
 Use it when the workflow record has no usage block. When DGR is unreachable or
 the build predates usage reporting, callers get an explicit warning rather than
@@ -27,7 +26,7 @@ TELEMETRY_TOOL = "get-task-status"
 # an unexpectedly large result degrades to a warning instead of exhausting
 # memory in an unattended nightly run.
 MAX_TELEMETRY_BYTES = 32 * 1024 * 1024
-CACHE_REPLAY_STEPS = {"cache-hit", "cache-check"}
+CACHE_REPLAY_STEPS = {"cache-hit"}
 
 
 class DgrTelemetryClient:
@@ -96,14 +95,23 @@ class DgrTelemetryClient:
         if client is None:
             return None, self.unavailable_reason
         try:
-            payload = client.call_tool(TELEMETRY_TOOL, {"taskId": task_id, "resultMode": "full"})
+            payload = client.call_tool(TELEMETRY_TOOL, {"taskId": task_id, "resultMode": "annotation"})
         except McpError as exc:
             return None, f"DGR telemetry read for task {task_id} failed: {exc}"
         if not isinstance(payload, dict):
             return None, f"DGR returned a non-object telemetry payload for task {task_id}"
         if str(payload.get("taskId") or payload.get("id") or "") not in ("", task_id):
             return None, f"DGR returned telemetry for a different task than {task_id}"
-        return summarize_task_telemetry(payload), None
+        telemetry = summarize_task_telemetry(payload)
+        if telemetry["status"] == "completed" and not telemetry["llmUsage"]:
+            try:
+                full = client.call_tool(TELEMETRY_TOOL, {"taskId": task_id, "resultMode": "full"})
+            except McpError as exc:
+                return telemetry, f"DGR legacy full-result telemetry read for task {task_id} failed: {exc}"
+            if not isinstance(full, dict) or str(full.get("taskId") or full.get("id") or "") not in ("", task_id):
+                return telemetry, f"DGR returned invalid full-result telemetry for task {task_id}"
+            telemetry = summarize_task_telemetry(full)
+        return telemetry, None
 
 
 def summarize_task_telemetry(task: dict[str, Any]) -> dict[str, Any]:
